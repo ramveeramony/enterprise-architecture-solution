@@ -1,0 +1,24 @@
+# Backend requirements for Enterprise Architecture Solution
+
+# Core dependencies
+fastapi==0.110.0
+uvicorn==0.24.0
+pydantic==2.6.1
+python-dotenv==1.0.0
+python-multipart==0.0.6
+
+# Database
+supabase==1.2.0
+postgrest==0.11.0
+
+# GenAI
+openai==1.12.0
+
+# Integrations
+msal==1.25.0  # Microsoft Authentication Library
+requests==2.31.0
+httpx==0.26.0
+
+# Testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
