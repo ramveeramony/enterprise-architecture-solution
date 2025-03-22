@@ -5,573 +5,438 @@ This module provides services for EA element operations.
 """
 
 import logging
-import uuid
 from typing import Dict, List, Any, Optional
+import json
 from datetime import datetime
+
+from .base_service import BaseService
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class ElementService:
+class ElementService(BaseService):
     """Service for EA element operations."""
     
     def __init__(self, supabase_client):
-        """Initialize the Element Service.
+        """Initialize the element service.
         
         Args:
-            supabase_client: Configured Supabase client
+            supabase_client: A configured Supabase client for database operations
         """
-        self.supabase = supabase_client
+        super().__init__(supabase_client, 'ea_elements')
+        # Initialize version history table
+        self.version_table = 'ea_element_versions'
     
-    async def get_elements(self, model_id: Optional[str] = None, type_id: Optional[str] = None,
-                          user_id: str = None, filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-        """Get EA elements with optional filtering.
-        
-        Args:
-            model_id: Optional ID of the model to filter by
-            type_id: Optional ID of the element type to filter by
-            user_id: ID of the requesting user
-            filters: Additional filters to apply
-            
-        Returns:
-            List of EA elements
-        """
-        try:
-            query = self.supabase.table("ea_elements") \
-                .select("*, type_id(id, name, domain_id, icon), model_id(id, name), created_by(id, email), updated_by(id, email)")
-            
-            # Apply mandatory filters
-            if model_id:
-                query = query.eq("model_id", model_id)
-                
-            if type_id:
-                query = query.eq("type_id", type_id)
-            
-            # Apply additional filters if provided
-            if filters:
-                if 'name' in filters:
-                    query = query.ilike('name', f'%{filters["name"]}%')
-                    
-                if 'status' in filters:
-                    query = query.eq('status', filters['status'])
-                    
-                if 'external_id' in filters:
-                    query = query.eq('external_id', filters['external_id'])
-                    
-                if 'external_source' in filters:
-                    query = query.eq('external_source', filters['external_source'])
-                    
-                if 'domain_id' in filters:
-                    # This requires a join, so we'll fetch all elements and filter in-memory
-                    pass  # Handled below
-            
-            # Execute the query
-            response = query.execute()
-            
-            if not response.data:
-                return []
-            
-            # Apply domain filter if needed
-            elements = response.data
-            if filters and 'domain_id' in filters:
-                domain_id = filters['domain_id']
-                elements = [e for e in elements if e['type_id']['domain_id'] == domain_id]
-                
-            return elements
-            
-        except Exception as e:
-            logger.error(f"Error getting elements: {str(e)}")
-            raise
-    
-    async def get_element_by_id(self, element_id: str, user_id: str) -> Optional[Dict[str, Any]]:
-        """Get an EA element by ID.
-        
-        Args:
-            element_id: ID of the element to retrieve
-            user_id: ID of the requesting user
-            
-        Returns:
-            EA element if found, None otherwise
-        """
-        try:
-            response = self.supabase.table("ea_elements") \
-                .select("*, type_id(id, name, domain_id, icon), model_id(id, name), created_by(id, email), updated_by(id, email)") \
-                .eq("id", element_id) \
-                .execute()
-            
-            if not response.data:
-                return None
-                
-            return response.data[0]
-            
-        except Exception as e:
-            logger.error(f"Error getting element by ID: {str(e)}")
-            raise
-    
-    async def create_element(self, element_data: Dict[str, Any], user_id: str) -> Dict[str, Any]:
+    async def create_element(self, data: Dict[str, Any], user_id: str) -> Dict[str, Any]:
         """Create a new EA element.
         
         Args:
-            element_data: Element data to create
+            data: Element data
             user_id: ID of the user creating the element
             
         Returns:
             Created element
         """
         try:
-            # Prepare the element data
-            new_element = {
-                "model_id": element_data["model_id"],
-                "type_id": element_data["type_id"],
-                "name": element_data["name"],
-                "description": element_data.get("description"),
-                "status": element_data.get("status", "draft"),
-                "external_id": element_data.get("external_id"),
-                "external_source": element_data.get("external_source"),
-                "properties": element_data.get("properties", {}),
-                "position_x": element_data.get("position_x"),
-                "position_y": element_data.get("position_y"),
-                "created_by": user_id
-            }
+            # Validate required fields
+            required_fields = ['name', 'type_id', 'model_id']
+            for field in required_fields:
+                if field not in data or not data[field]:
+                    raise ValueError(f"Field '{field}' is required")
             
-            # Insert the element
-            response = self.supabase.table("ea_elements").insert(new_element).execute()
+            # Set default values
+            if 'status' not in data or not data['status']:
+                data['status'] = 'draft'
             
-            if not response.data:
-                raise Exception("Failed to create element")
-                
-            # Get the created element with full information
-            created_element = await self.get_element_by_id(response.data[0]["id"], user_id)
+            # Create element
+            element = await self.create(data, user_id)
             
-            return created_element
+            # Create initial version
+            await self._create_version(element, user_id, 'Initial version')
             
+            return await self.get_element_with_details(element['id'])
+        
         except Exception as e:
             logger.error(f"Error creating element: {str(e)}")
             raise
     
-    async def update_element(self, element_id: str, element_data: Dict[str, Any], user_id: str) -> Dict[str, Any]:
-        """Update an existing EA element.
+    async def update_element(self, id: str, data: Dict[str, Any], user_id: str, change_description: str = 'Update') -> Dict[str, Any]:
+        """Update an EA element.
         
         Args:
-            element_id: ID of the element to update
-            element_data: Updated element data
+            id: Element ID
+            data: Updated element data
             user_id: ID of the user updating the element
+            change_description: Description of the changes made
             
         Returns:
             Updated element
         """
         try:
-            # Check if the element exists
-            existing_element = await self.get_element_by_id(element_id, user_id)
+            # Get current element
+            current_element = await self.get_by_id(id)
             
-            if not existing_element:
-                raise Exception(f"Element with ID {element_id} not found")
+            if not current_element:
+                raise ValueError(f"Element {id} not found")
             
-            # Prepare the update data
-            update_data = {
-                "updated_at": datetime.now().isoformat(),
-                "updated_by": user_id
-            }
+            # Don't allow changing model_id
+            if 'model_id' in data and data['model_id'] != current_element['model_id']:
+                raise ValueError("Changing the model of an element is not allowed")
             
-            # Add fields to update if they are provided
-            updateable_fields = [
-                "name", "description", "status", "external_id", 
-                "external_source", "properties", "position_x", "position_y"
-            ]
+            # Update element
+            updated_element = await self.update(id, data, user_id)
             
-            for field in updateable_fields:
-                if field in element_data:
-                    update_data[field] = element_data[field]
+            # Create version
+            await self._create_version(updated_element, user_id, change_description)
             
-            # Handle type_id separately (it requires additional validation)
-            if "type_id" in element_data:
-                # Check if the type exists
-                type_response = self.supabase.table("ea_element_types") \
-                    .select("id") \
-                    .eq("id", element_data["type_id"]) \
-                    .execute()
-                
-                if not type_response.data:
-                    raise Exception(f"Element type with ID {element_data['type_id']} not found")
-                
-                update_data["type_id"] = element_data["type_id"]
-            
-            # Update the element
-            response = self.supabase.table("ea_elements") \
-                .update(update_data) \
-                .eq("id", element_id) \
-                .execute()
-            
-            if not response.data:
-                raise Exception(f"Failed to update element with ID {element_id}")
-                
-            # Get the updated element with full information
-            updated_element = await self.get_element_by_id(element_id, user_id)
-            
-            return updated_element
-            
+            return await self.get_element_with_details(id)
+        
         except Exception as e:
-            logger.error(f"Error updating element: {str(e)}")
+            logger.error(f"Error updating element {id}: {str(e)}")
             raise
     
-    async def delete_element(self, element_id: str, user_id: str) -> bool:
+    async def delete_element(self, id: str, user_id: str) -> bool:
         """Delete an EA element.
         
         Args:
-            element_id: ID of the element to delete
+            id: Element ID
             user_id: ID of the user deleting the element
             
         Returns:
-            True if deleted successfully
+            True if deleted, False otherwise
         """
         try:
-            # Check if the element exists
-            existing_element = await self.get_element_by_id(element_id, user_id)
+            # Check for related relationships
+            source_rels = await self.supabase.table('ea_relationships').select('id').eq('source_element_id', id).execute()
+            target_rels = await self.supabase.table('ea_relationships').select('id').eq('target_element_id', id).execute()
             
-            if not existing_element:
-                raise Exception(f"Element with ID {element_id} not found")
+            relationships = []
+            if source_rels.data:
+                relationships.extend(source_rels.data)
+            if target_rels.data:
+                relationships.extend(target_rels.data)
             
-            # First, check for dependencies
-            # Check for relationships where this element is source or target
-            relationships_response = self.supabase.table("ea_relationships") \
-                .select("id") \
-                .or(f"source_element_id.eq.{element_id},target_element_id.eq.{element_id}") \
-                .execute()
+            # Delete associated relationships first
+            for rel in relationships:
+                await self.supabase.table('ea_relationships').delete().eq('id', rel['id']).execute()
             
-            if relationships_response.data and len(relationships_response.data) > 0:
-                # Delete the relationships first
-                self.supabase.table("ea_relationships") \
-                    .delete() \
-                    .or(f"source_element_id.eq.{element_id},target_element_id.eq.{element_id}") \
-                    .execute()
+            # Delete versions
+            await self.supabase.table(self.version_table).delete().eq('element_id', id).execute()
             
-            # Delete the element
-            response = self.supabase.table("ea_elements") \
-                .delete() \
-                .eq("id", element_id) \
-                .execute()
-            
-            return True
-            
+            # Delete element
+            return await self.delete(id)
+        
         except Exception as e:
-            logger.error(f"Error deleting element: {str(e)}")
+            logger.error(f"Error deleting element {id}: {str(e)}")
             raise
     
-    async def get_element_relationships(self, element_id: str, user_id: str) -> List[Dict[str, Any]]:
-        """Get all relationships for an element.
+    async def get_version_history(self, id: str) -> List[Dict[str, Any]]:
+        """Get version history for an element.
         
         Args:
-            element_id: ID of the element
-            user_id: ID of the requesting user
+            id: Element ID
             
         Returns:
-            List of relationships
+            List of versions
         """
         try:
-            # Check if the element exists
-            existing_element = await self.get_element_by_id(element_id, user_id)
+            result = self.supabase.table(self.version_table).select('*').eq('element_id', id).order('created_at', desc=True).execute()
             
-            if not existing_element:
-                raise Exception(f"Element with ID {element_id} not found")
-            
-            # Get relationships where this element is source or target
-            response = self.supabase.table("ea_relationships") \
-                .select("*, relationship_type_id(id, name, directional), source_element_id(id, name, type_id), target_element_id(id, name, type_id), created_by(id, email), updated_by(id, email)") \
-                .or(f"source_element_id.eq.{element_id},target_element_id.eq.{element_id}") \
-                .execute()
-            
-            if not response.data:
-                return []
-                
-            return response.data
-            
+            return result.data if result.data else []
+        
         except Exception as e:
-            logger.error(f"Error getting element relationships: {str(e)}")
+            logger.error(f"Error getting version history for element {id}: {str(e)}")
             raise
     
-    async def get_related_elements(self, element_id: str, user_id: str, depth: int = 1) -> List[Dict[str, Any]]:
-        """Get elements related to the specified element.
+    async def get_element_with_details(self, id: str) -> Dict[str, Any]:
+        """Get an element with detailed information.
         
         Args:
-            element_id: ID of the element
-            user_id: ID of the requesting user
-            depth: Relationship depth (1 = direct relationships only)
+            id: Element ID
             
         Returns:
-            List of related elements
+            Element with details
         """
         try:
-            # Check if the element exists
-            existing_element = await self.get_element_by_id(element_id, user_id)
+            # Get element
+            element = await self.get_by_id(id)
             
-            if not existing_element:
-                raise Exception(f"Element with ID {element_id} not found")
+            if not element:
+                raise ValueError(f"Element {id} not found")
             
-            if depth < 1:
-                depth = 1
+            # Get element type details
+            element_type = await self.supabase.table('ea_element_types').select('*').eq('id', element['type_id']).execute()
             
-            # Start with the direct relationships
-            relationships = await self.get_element_relationships(element_id, user_id)
+            if not element_type.data or len(element_type.data) == 0:
+                raise ValueError(f"Element type {element['type_id']} not found")
             
-            # Collect related element IDs
-            related_element_ids = set()
-            for relationship in relationships:
-                if relationship["source_element_id"]["id"] == element_id:
-                    related_element_ids.add(relationship["target_element_id"]["id"])
-                else:
-                    related_element_ids.add(relationship["source_element_id"]["id"])
+            # Get model details
+            model = await self.supabase.table('ea_models').select('name, status, lifecycle_state').eq('id', element['model_id']).execute()
             
-            # For depth > 1, iterate to get indirect relationships
-            if depth > 1:
-                for d in range(1, depth):
-                    # Get the next level of relationships
-                    next_level_ids = set()
-                    for related_id in related_element_ids:
-                        indirect_relationships = await self.get_element_relationships(related_id, user_id)
-                        for rel in indirect_relationships:
-                            if rel["source_element_id"]["id"] == related_id:
-                                next_level_ids.add(rel["target_element_id"]["id"])
-                            else:
-                                next_level_ids.add(rel["source_element_id"]["id"])
-                    
-                    # Remove the original element and already processed elements
-                    next_level_ids.discard(element_id)
-                    next_level_ids = next_level_ids - related_element_ids
-                    
-                    # Add to the set of related elements
-                    related_element_ids.update(next_level_ids)
+            if not model.data or len(model.data) == 0:
+                raise ValueError(f"Model {element['model_id']} not found")
             
-            # Get the full details for each related element
-            related_elements = []
-            for related_id in related_element_ids:
-                element = await self.get_element_by_id(related_id, user_id)
-                if element:
-                    related_elements.append(element)
+            # Get domain details
+            domain = await self.supabase.table('ea_domains').select('name').eq('id', element_type.data[0]['domain_id']).execute()
             
-            return related_elements
+            domain_name = domain.data[0]['name'] if domain.data and len(domain.data) > 0 else "Unknown"
             
+            # Get relationships where this element is the source
+            source_rels_query = """
+            SELECT r.id, r.name, r.description, 
+                   rt.name as relationship_type, 
+                   e.id as target_id, e.name as target_name, 
+                   et.name as target_type
+            FROM ea_relationships r
+            JOIN ea_relationship_types rt ON r.relationship_type_id = rt.id
+            JOIN ea_elements e ON r.target_element_id = e.id
+            JOIN ea_element_types et ON e.type_id = et.id
+            WHERE r.source_element_id = ?
+            """
+            source_rels = await self.supabase.rpc('run_sql', {'query': source_rels_query, 'params': [id]}).execute()
+            
+            # Get relationships where this element is the target
+            target_rels_query = """
+            SELECT r.id, r.name, r.description,
+                   rt.name as relationship_type,
+                   e.id as source_id, e.name as source_name,
+                   et.name as source_type
+            FROM ea_relationships r
+            JOIN ea_relationship_types rt ON r.relationship_type_id = rt.id
+            JOIN ea_elements e ON r.source_element_id = e.id
+            JOIN ea_element_types et ON e.type_id = et.id
+            WHERE r.target_element_id = ?
+            """
+            target_rels = await self.supabase.rpc('run_sql', {'query': target_rels_query, 'params': [id]}).execute()
+            
+            # Combine all information
+            return {
+                **element,
+                'type': element_type.data[0],
+                'model': model.data[0],
+                'domain': domain_name,
+                'outgoing_relationships': source_rels.data if source_rels.data else [],
+                'incoming_relationships': target_rels.data if target_rels.data else []
+            }
+        
         except Exception as e:
-            logger.error(f"Error getting related elements: {str(e)}")
+            logger.error(f"Error getting element with details {id}: {str(e)}")
             raise
     
-    async def get_element_history(self, element_id: str, user_id: str) -> List[Dict[str, Any]]:
-        """Get the version history of an element.
+    async def get_elements_by_model(self, model_id: str) -> List[Dict[str, Any]]:
+        """Get all elements for a specific model.
         
         Args:
-            element_id: ID of the element
-            user_id: ID of the requesting user
+            model_id: Model ID
             
         Returns:
-            List of element versions from the audit trail
+            List of elements with type information
         """
         try:
-            # Check if the element exists
-            existing_element = await self.get_element_by_id(element_id, user_id)
+            # Query with join to get element type information
+            query = """
+            SELECT e.*, et.name as type_name, et.icon as type_icon, d.name as domain_name
+            FROM ea_elements e
+            JOIN ea_element_types et ON e.type_id = et.id
+            JOIN ea_domains d ON et.domain_id = d.id
+            WHERE e.model_id = ?
+            """
             
-            if not existing_element:
-                raise Exception(f"Element with ID {element_id} not found")
+            result = await self.supabase.rpc('run_sql', {'query': query, 'params': [model_id]}).execute()
             
-            # In a production system, we would query an audit trail table
-            # For now, we'll return a simplified history
-            response = self.supabase.table("ea_elements") \
-                .select("updated_at, updated_by(id, email)") \
-                .eq("id", element_id) \
-                .execute()
-            
-            if not response.data or not response.data[0]["updated_at"]:
-                # Only the creation event
-                return [{
-                    "element_id": element_id,
-                    "event": "created",
-                    "timestamp": existing_element["created_at"],
-                    "user": existing_element["created_by"],
-                    "data": existing_element
-                }]
-            
-            # Return created and updated events
-            return [
-                {
-                    "element_id": element_id,
-                    "event": "created",
-                    "timestamp": existing_element["created_at"],
-                    "user": existing_element["created_by"],
-                    "data": existing_element
-                },
-                {
-                    "element_id": element_id,
-                    "event": "updated",
-                    "timestamp": existing_element["updated_at"],
-                    "user": existing_element["updated_by"],
-                    "data": existing_element
-                }
-            ]
-            
+            return result.data if result.data else []
+        
         except Exception as e:
-            logger.error(f"Error getting element history: {str(e)}")
+            logger.error(f"Error getting elements for model {model_id}: {str(e)}")
             raise
     
-    async def create_relationship(self, source_id: str, target_id: str, relationship_type_id: str, 
-                                 relationship_data: Dict[str, Any], user_id: str) -> Dict[str, Any]:
-        """Create a relationship between two elements.
+    async def get_elements_by_domain(self, model_id: str, domain_id: str) -> List[Dict[str, Any]]:
+        """Get elements for a specific model and domain.
         
         Args:
-            source_id: ID of the source element
-            target_id: ID of the target element
-            relationship_type_id: ID of the relationship type
-            relationship_data: Additional relationship data
-            user_id: ID of the user creating the relationship
+            model_id: Model ID
+            domain_id: Domain ID
             
         Returns:
-            Created relationship
+            List of elements with type information
         """
         try:
-            # Check if the source element exists
-            source_element = await self.get_element_by_id(source_id, user_id)
+            # Query with join to get element type information
+            query = """
+            SELECT e.*, et.name as type_name, et.icon as type_icon
+            FROM ea_elements e
+            JOIN ea_element_types et ON e.type_id = et.id
+            WHERE e.model_id = ? AND et.domain_id = ?
+            """
             
-            if not source_element:
-                raise Exception(f"Source element with ID {source_id} not found")
+            result = await self.supabase.rpc('run_sql', {'query': query, 'params': [model_id, domain_id]}).execute()
             
-            # Check if the target element exists
-            target_element = await self.get_element_by_id(target_id, user_id)
+            return result.data if result.data else []
+        
+        except Exception as e:
+            logger.error(f"Error getting elements for model {model_id} and domain {domain_id}: {str(e)}")
+            raise
+    
+    async def get_elements_by_status(self, model_id: str, status: str) -> List[Dict[str, Any]]:
+        """Get elements for a specific model and status.
+        
+        Args:
+            model_id: Model ID
+            status: Element status
             
-            if not target_element:
-                raise Exception(f"Target element with ID {target_id} not found")
+        Returns:
+            List of elements with type information
+        """
+        try:
+            # Query with join to get element type information
+            query = """
+            SELECT e.*, et.name as type_name, et.icon as type_icon, d.name as domain_name
+            FROM ea_elements e
+            JOIN ea_element_types et ON e.type_id = et.id
+            JOIN ea_domains d ON et.domain_id = d.id
+            WHERE e.model_id = ? AND e.status = ?
+            """
             
-            # Check if the elements are in the same model
-            if source_element["model_id"]["id"] != target_element["model_id"]["id"]:
-                raise Exception("Source and target elements must be in the same model")
+            result = await self.supabase.rpc('run_sql', {'query': query, 'params': [model_id, status]}).execute()
             
-            # Check if the relationship type exists
-            type_response = self.supabase.table("ea_relationship_types") \
-                .select("id") \
-                .eq("id", relationship_type_id) \
-                .execute()
+            return result.data if result.data else []
+        
+        except Exception as e:
+            logger.error(f"Error getting elements for model {model_id} and status {status}: {str(e)}")
+            raise
+    
+    async def search_elements(self, search_term: str, model_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Search for elements by name or description.
+        
+        Args:
+            search_term: Search term
+            model_id: Optional model ID to restrict search
             
-            if not type_response.data:
-                raise Exception(f"Relationship type with ID {relationship_type_id} not found")
+        Returns:
+            List of matching elements
+        """
+        try:
+            # Prepare query
+            if model_id:
+                query = """
+                SELECT e.*, et.name as type_name, et.icon as type_icon, m.name as model_name, d.name as domain_name
+                FROM ea_elements e
+                JOIN ea_element_types et ON e.type_id = et.id
+                JOIN ea_models m ON e.model_id = m.id
+                JOIN ea_domains d ON et.domain_id = d.id
+                WHERE e.model_id = ?
+                AND (e.name ILIKE ? OR e.description ILIKE ?)
+                """
+                search_pattern = f"%{search_term}%"
+                result = await self.supabase.rpc('run_sql', {'query': query, 'params': [model_id, search_pattern, search_pattern]}).execute()
+            else:
+                query = """
+                SELECT e.*, et.name as type_name, et.icon as type_icon, m.name as model_name, d.name as domain_name
+                FROM ea_elements e
+                JOIN ea_element_types et ON e.type_id = et.id
+                JOIN ea_models m ON e.model_id = m.id
+                JOIN ea_domains d ON et.domain_id = d.id
+                WHERE e.name ILIKE ? OR e.description ILIKE ?
+                """
+                search_pattern = f"%{search_term}%"
+                result = await self.supabase.rpc('run_sql', {'query': query, 'params': [search_pattern, search_pattern]}).execute()
             
-            # Prepare the relationship data
-            new_relationship = {
-                "model_id": source_element["model_id"]["id"],
-                "relationship_type_id": relationship_type_id,
-                "source_element_id": source_id,
-                "target_element_id": target_id,
-                "name": relationship_data.get("name"),
-                "description": relationship_data.get("description"),
-                "status": relationship_data.get("status", "draft"),
-                "properties": relationship_data.get("properties", {}),
-                "created_by": user_id
+            return result.data if result.data else []
+        
+        except Exception as e:
+            logger.error(f"Error searching elements: {str(e)}")
+            raise
+    
+    async def _create_version(
+        self, 
+        element: Dict[str, Any], 
+        user_id: str, 
+        change_description: str
+    ) -> Dict[str, Any]:
+        """Create a version record for an element.
+        
+        Args:
+            element: Element data
+            user_id: ID of the user creating the version
+            change_description: Description of the changes
+            
+        Returns:
+            Created version
+        """
+        try:
+            # Create version
+            version_data = {
+                'element_id': element['id'],
+                'element_data': element,
+                'change_description': change_description,
+                'created_by': user_id,
+                'created_at': datetime.now().isoformat()
             }
             
-            # Insert the relationship
-            response = self.supabase.table("ea_relationships").insert(new_relationship).execute()
+            result = await self.supabase.table(self.version_table).insert(version_data).execute()
             
-            if not response.data:
-                raise Exception("Failed to create relationship")
+            if not result.data:
+                raise ValueError(f"Failed to create version for element {element['id']}")
                 
-            # Get the created relationship with full information
-            relationship_id = response.data[0]["id"]
-            created_relationship = self.supabase.table("ea_relationships") \
-                .select("*, relationship_type_id(id, name, directional), source_element_id(id, name, type_id), target_element_id(id, name, type_id), created_by(id, email)") \
-                .eq("id", relationship_id) \
-                .execute()
-            
-            if not created_relationship.data:
-                raise Exception(f"Failed to retrieve created relationship with ID {relationship_id}")
-                
-            return created_relationship.data[0]
-            
+            return result.data[0]
+        
         except Exception as e:
-            logger.error(f"Error creating relationship: {str(e)}")
+            logger.error(f"Error creating version for element {element['id']}: {str(e)}")
             raise
     
-    async def update_relationship(self, relationship_id: str, relationship_data: Dict[str, Any], user_id: str) -> Dict[str, Any]:
-        """Update an existing relationship.
+    async def restore_version(self, element_id: str, version_id: str, user_id: str) -> Dict[str, Any]:
+        """Restore an element from a version.
         
         Args:
-            relationship_id: ID of the relationship to update
-            relationship_data: Updated relationship data
-            user_id: ID of the user updating the relationship
+            element_id: Element ID
+            version_id: Version ID
+            user_id: ID of the user restoring the version
             
         Returns:
-            Updated relationship
+            Restored element
         """
         try:
-            # Check if the relationship exists
-            relationship_response = self.supabase.table("ea_relationships") \
-                .select("id") \
-                .eq("id", relationship_id) \
-                .execute()
+            # Get version
+            version_result = await self.supabase.table(self.version_table).select('*').eq('id', version_id).eq('element_id', element_id).execute()
             
-            if not relationship_response.data:
-                raise Exception(f"Relationship with ID {relationship_id} not found")
-            
-            # Prepare the update data
-            update_data = {
-                "updated_at": datetime.now().isoformat(),
-                "updated_by": user_id
-            }
-            
-            # Add fields to update if they are provided
-            updateable_fields = ["name", "description", "status", "properties"]
-            
-            for field in updateable_fields:
-                if field in relationship_data:
-                    update_data[field] = relationship_data[field]
-            
-            # Update the relationship
-            response = self.supabase.table("ea_relationships") \
-                .update(update_data) \
-                .eq("id", relationship_id) \
-                .execute()
-            
-            if not response.data:
-                raise Exception(f"Failed to update relationship with ID {relationship_id}")
+            if not version_result.data or len(version_result.data) == 0:
+                raise ValueError(f"Version {version_id} not found for element {element_id}")
                 
-            # Get the updated relationship with full information
-            updated_relationship = self.supabase.table("ea_relationships") \
-                .select("*, relationship_type_id(id, name, directional), source_element_id(id, name, type_id), target_element_id(id, name, type_id), created_by(id, email), updated_by(id, email)") \
-                .eq("id", relationship_id) \
-                .execute()
+            version = version_result.data[0]
             
-            if not updated_relationship.data:
-                raise Exception(f"Failed to retrieve updated relationship with ID {relationship_id}")
-                
-            return updated_relationship.data[0]
+            # Get current element
+            current_element = await self.get_by_id(element_id)
             
-        except Exception as e:
-            logger.error(f"Error updating relationship: {str(e)}")
-            raise
-    
-    async def delete_relationship(self, relationship_id: str, user_id: str) -> bool:
-        """Delete a relationship.
+            if not current_element:
+                raise ValueError(f"Element {element_id} not found")
+            
+            # Create snapshot of current state before restoring
+            await self._create_version(
+                current_element, 
+                user_id, 
+                f"Automatic snapshot before restoring version {version_id}"
+            )
+            
+            # Extract data from version
+            element_data = version['element_data']
+            
+            # Ensure ID and model_id remain the same
+            element_data['id'] = element_id
+            element_data['model_id'] = current_element['model_id']
+            
+            # Update element
+            updated_element = await self.update(element_id, element_data, user_id)
+            
+            # Create version for restoration
+            await self._create_version(
+                updated_element, 
+                user_id, 
+                f"Restored from version {version_id}"
+            )
+            
+            return await self.get_element_with_details(element_id)
         
-        Args:
-            relationship_id: ID of the relationship to delete
-            user_id: ID of the user deleting the relationship
-            
-        Returns:
-            True if deleted successfully
-        """
-        try:
-            # Check if the relationship exists
-            relationship_response = self.supabase.table("ea_relationships") \
-                .select("id") \
-                .eq("id", relationship_id) \
-                .execute()
-            
-            if not relationship_response.data:
-                raise Exception(f"Relationship with ID {relationship_id} not found")
-            
-            # Delete the relationship
-            response = self.supabase.table("ea_relationships") \
-                .delete() \
-                .eq("id", relationship_id) \
-                .execute()
-            
-            return True
-            
         except Exception as e:
-            logger.error(f"Error deleting relationship: {str(e)}")
+            logger.error(f"Error restoring version {version_id} for element {element_id}: {str(e)}")
             raise
