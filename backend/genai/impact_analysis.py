@@ -1,15 +1,15 @@
 """
 Enterprise Architecture Solution - Impact Analysis
 
-This module implements the GenAI-powered impact analysis capabilities.
+This module implements the AI-powered impact analysis capabilities
+for the Enterprise Architecture Solution using OpenAI's GPT models.
 """
 
 import os
-import json
 import logging
 from typing import Dict, List, Any, Optional
+import json
 from datetime import datetime
-import uuid
 
 from openai import OpenAI
 
@@ -18,23 +18,20 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class ImpactAnalysis:
-    """Class for analyzing the impact of architecture changes."""
+    """Analyze the impact of architecture changes."""
     
-    def __init__(self, supabase_client, openai_client=None):
-        """Initialize the impact analyzer.
+    def __init__(self, supabase_client):
+        """Initialize the Impact Analysis engine.
         
         Args:
             supabase_client: A configured Supabase client for database operations
-            openai_client: Optional pre-configured OpenAI client
         """
         self.supabase = supabase_client
-        self.openai = openai_client or OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    
-    def analyze_element_change(self, element_id: str, 
-                              change_description: str,
-                              change_type: str = "modify",
-                              analysis_depth: int = 2) -> Dict[str, Any]:
-        """Analyze the impact of a change to an EA element.
+        self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        
+    def analyze_impact(self, element_id: str, change_description: str, 
+                     change_type: str, analysis_depth: int = 2) -> Dict[str, Any]:
+        """Analyze the impact of a proposed change to an architecture element.
         
         Args:
             element_id: UUID of the element being changed
@@ -43,336 +40,308 @@ class ImpactAnalysis:
             analysis_depth: Depth of impact analysis (1=direct, 2=indirect, 3=comprehensive)
             
         Returns:
-            Dictionary containing the impact analysis results
+            Dict containing the impact analysis results
         """
         try:
-            # Validate parameters
-            valid_change_types = ["modify", "replace", "remove"]
-            if change_type not in valid_change_types:
-                return {
-                    "success": False,
-                    "error": f"Invalid change_type: {change_type}. Must be one of {valid_change_types}"
-                }
+            # Get element data
+            element_data = self._get_element_data(element_id)
             
-            if analysis_depth < 1 or analysis_depth > 3:
-                return {
-                    "success": False,
-                    "error": f"Invalid analysis_depth: {analysis_depth}. Must be between 1 and 3"
-                }
+            # Get related elements based on analysis depth
+            related_elements = self._get_related_elements(element_id, analysis_depth)
             
-            # Fetch the element being changed
-            element_query = self.supabase.table("ea_elements").select(
-                "*"
-            ).eq("id", element_id).execute()
+            # Perform impact analysis using OpenAI
+            impact_analysis = self._analyze_with_ai(element_data, related_elements, 
+                                                  change_description, change_type)
             
-            if not element_query.data:
-                return {
-                    "success": False,
-                    "error": f"Element with ID {element_id} not found"
-                }
-            
-            element = element_query.data[0]
-            
-            # Get element type information
-            element_type_query = self.supabase.table("ea_element_types").select(
-                "*"
-            ).eq("id", element["type_id"]).execute()
-            
-            element_type = element_type_query.data[0] if element_type_query.data else None
-            
-            # Identify affected elements based on analysis depth
-            affected_elements = []
-            
-            # Level 1: Directly connected elements (through relationships)
-            direct_relationships = self._get_element_relationships(element_id)
-            direct_elements = self._get_related_elements(direct_relationships)
-            affected_elements.extend(direct_elements)
-            
-            # Level 2: Indirectly connected elements (second-degree relationships)
-            if analysis_depth >= 2:
-                indirect_elements = []
-                for related_element in direct_elements:
-                    # Skip self-references
-                    if related_element["id"] == element_id:
-                        continue
-                    
-                    # Get relationships for this related element
-                    related_relationships = self._get_element_relationships(related_element["id"])
-                    related_indirect_elements = self._get_related_elements(related_relationships)
-                    
-                    # Add unique elements only
-                    for indirect_element in related_indirect_elements:
-                        if indirect_element["id"] != element_id and not any(e["id"] == indirect_element["id"] for e in affected_elements):
-                            indirect_element["impact_level"] = "indirect"
-                            indirect_elements.append(indirect_element)
-                
-                affected_elements.extend(indirect_elements)
-            
-            # Level 3: Comprehensive analysis (third-degree relationships and domain analysis)
-            if analysis_depth >= 3:
-                # Get elements in the same domain
-                if element_type:
-                    domain_id = element_type.get("domain_id")
-                    if domain_id:
-                        domain_elements_query = self.supabase.table("ea_elements").select(
-                            "*"
-                        ).eq("domain_id", domain_id).neq("id", element_id).execute()
-                        
-                        domain_elements = domain_elements_query.data if domain_elements_query.data else []
-                        
-                        for domain_element in domain_elements:
-                            if not any(e["id"] == domain_element["id"] for e in affected_elements):
-                                domain_element["impact_level"] = "domain"
-                                affected_elements.append(domain_element)
-            
-            # Prepare context for AI analysis
-            context = {
-                "element": {
-                    "id": element["id"],
-                    "name": element["name"],
-                    "description": element["description"],
-                    "type": element_type["name"] if element_type else "Unknown",
-                    "properties": element["properties"]
-                },
-                "change": {
-                    "type": change_type,
-                    "description": change_description
-                },
-                "affected_elements": affected_elements,
-                "analysis_depth": analysis_depth
-            }
-            
-            # Generate impact analysis using OpenAI
-            analysis_result = self._generate_impact_analysis(context)
-            
-            # Save the analysis result to the database
-            analysis_id = self._save_analysis_result(element_id, change_description, change_type, analysis_result)
+            # Log the analysis
+            self._log_analysis(element_id, change_description, change_type, analysis_depth)
             
             return {
                 "success": True,
-                "analysis_id": analysis_id,
-                "element_id": element_id,
-                "change_type": change_type,
-                "analysis_depth": analysis_depth,
-                "affected_elements_count": len(affected_elements),
-                "analysis": analysis_result,
-                "generated_at": datetime.now().isoformat()
+                "impact_analysis": impact_analysis,
+                "metadata": {
+                    "element_id": element_id,
+                    "change_type": change_type,
+                    "analysis_depth": analysis_depth,
+                    "analyzed_at": datetime.now().isoformat(),
+                }
             }
             
         except Exception as e:
-            logger.error(f"Error analyzing element change: {str(e)}")
-            return {
-                "success": False,
-                "error": str(e)
-            }
+            logger.error(f"Error performing impact analysis: {str(e)}")
+            return {"success": False, "error": str(e)}
     
-    def _get_element_relationships(self, element_id: str) -> List[Dict[str, Any]]:
-        """Get all relationships for an element.
+    def _get_element_data(self, element_id: str) -> Dict[str, Any]:
+        """Get element data from the database.
         
         Args:
-            element_id: UUID of the element
+            element_id: ID of the element
             
         Returns:
-            List of relationship dictionaries
+            Element data dictionary
         """
-        # Fetch relationships where this element is the source
-        source_relationships = self.supabase.table("ea_relationships").select(
-            "*"
-        ).eq("source_element_id", element_id).execute()
+        # Query the element table
+        element_query = self.supabase.table("ea_elements").select("*").eq("id", element_id).execute()
         
-        # Fetch relationships where this element is the target
-        target_relationships = self.supabase.table("ea_relationships").select(
-            "*"
-        ).eq("target_element_id", element_id).execute()
+        if not element_query.data:
+            raise ValueError(f"Element with ID {element_id} not found")
+            
+        element = element_query.data[0]
         
-        # Combine relationships data
-        relationships = []
-        if source_relationships.data:
-            for rel in source_relationships.data:
-                rel["direction"] = "outgoing"
-                relationships.append(rel)
+        # Get element type information
+        element_type_query = self.supabase.table("ea_element_types").select("*").eq("id", element["type_id"]).execute()
+        element_type = element_type_query.data[0] if element_type_query.data else {"name": "Unknown"}
         
-        if target_relationships.data:
-            for rel in target_relationships.data:
-                rel["direction"] = "incoming"
-                relationships.append(rel)
+        # Get model information
+        model_query = self.supabase.table("ea_models").select("*").eq("id", element["model_id"]).execute()
+        model = model_query.data[0] if model_query.data else {"name": "Unknown"}
         
-        return relationships
-    
-    def _get_related_elements(self, relationships: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Get elements related through relationships.
+        # Compile element data
+        element_data = {
+            "id": element["id"],
+            "name": element["name"],
+            "description": element["description"],
+            "type": element_type["name"],
+            "status": element["status"],
+            "properties": element["properties"],
+            "model": model["name"]
+        }
+        
+        return element_data
+
+    def _get_related_elements(self, element_id: str, depth: int = 2) -> List[Dict[str, Any]]:
+        """Get related elements based on analysis depth.
         
         Args:
-            relationships: List of relationship dictionaries
+            element_id: ID of the element
+            depth: Depth of relationship analysis
             
         Returns:
-            List of related element dictionaries
+            List of related elements with relationship information
         """
         related_elements = []
-        element_ids = set()
         
-        for relationship in relationships:
-            # Determine the related element ID based on relationship direction
-            related_id = None
-            if relationship.get("direction") == "outgoing":
-                related_id = relationship.get("target_element_id")
-            elif relationship.get("direction") == "incoming":
-                related_id = relationship.get("source_element_id")
+        # Level 1: Direct relationships
+        # Get relationships where this element is the source
+        source_rels_query = self.supabase.table("ea_relationships").select("*").eq("source_element_id", element_id).execute()
+        source_rels = source_rels_query.data if source_rels_query.data else []
+        
+        # Get relationships where this element is the target
+        target_rels_query = self.supabase.table("ea_relationships").select("*").eq("target_element_id", element_id).execute()
+        target_rels = target_rels_query.data if target_rels_query.data else []
+        
+        # Process direct relationships
+        level1_element_ids = []
+        for rel in source_rels + target_rels:
+            rel_type_query = self.supabase.table("ea_relationship_types").select("*").eq("id", rel["relationship_type_id"]).execute()
+            rel_type = rel_type_query.data[0] if rel_type_query.data else {"name": "Unknown"}
             
-            if related_id and related_id not in element_ids:
-                element_ids.add(related_id)
+            # Get the other element in the relationship
+            other_id = rel["target_element_id"] if rel["source_element_id"] == element_id else rel["source_element_id"]
+            other_element_query = self.supabase.table("ea_elements").select("*").eq("id", other_id).execute()
+            
+            if other_element_query.data:
+                other_element = other_element_query.data[0]
+                element_type_query = self.supabase.table("ea_element_types").select("*").eq("id", other_element["type_id"]).execute()
+                element_type = element_type_query.data[0] if element_type_query.data else {"name": "Unknown"}
                 
-                # Fetch the related element
-                element_query = self.supabase.table("ea_elements").select(
-                    "*"
-                ).eq("id", related_id).execute()
+                related_elements.append({
+                    "id": other_element["id"],
+                    "name": other_element["name"],
+                    "type": element_type["name"],
+                    "relationship": rel_type["name"],
+                    "direction": "outgoing" if rel["source_element_id"] == element_id else "incoming",
+                    "level": 1
+                })
                 
-                if element_query.data:
-                    element = element_query.data[0]
-                    element["impact_level"] = "direct"
-                    element["relationship"] = {
-                        "id": relationship.get("id"),
-                        "type_id": relationship.get("relationship_type_id"),
-                        "name": relationship.get("name"),
-                        "direction": relationship.get("direction")
-                    }
-                    related_elements.append(element)
+                level1_element_ids.append(other_id)
+        
+        # If depth is greater than 1, get indirect relationships
+        if depth > 1:
+            # For each directly related element, get its relationships
+            for related_id in level1_element_ids:
+                # Get relationships where this element is the source
+                source_rels_query = self.supabase.table("ea_relationships").select("*").eq("source_element_id", related_id).execute()
+                source_rels = source_rels_query.data if source_rels_query.data else []
+                
+                # Get relationships where this element is the target
+                target_rels_query = self.supabase.table("ea_relationships").select("*").eq("target_element_id", related_id).execute()
+                target_rels = target_rels_query.data if target_rels_query.data else []
+                
+                # Process level 2 relationships
+                for rel in source_rels + target_rels:
+                    # Skip relationships with the original element
+                    if rel["source_element_id"] == element_id or rel["target_element_id"] == element_id:
+                        continue
+                    
+                    rel_type_query = self.supabase.table("ea_relationship_types").select("*").eq("id", rel["relationship_type_id"]).execute()
+                    rel_type = rel_type_query.data[0] if rel_type_query.data else {"name": "Unknown"}
+                    
+                    # Get the other element in the relationship
+                    other_id = rel["target_element_id"] if rel["source_element_id"] == related_id else rel["source_element_id"]
+                    other_element_query = self.supabase.table("ea_elements").select("*").eq("id", other_id).execute()
+                    
+                    if other_element_query.data:
+                        other_element = other_element_query.data[0]
+                        element_type_query = self.supabase.table("ea_element_types").select("*").eq("id", other_element["type_id"]).execute()
+                        element_type = element_type_query.data[0] if element_type_query.data else {"name": "Unknown"}
+                        
+                        # Check if this is already in our list
+                        if not any(e["id"] == other_element["id"] for e in related_elements):
+                            related_elements.append({
+                                "id": other_element["id"],
+                                "name": other_element["name"],
+                                "type": element_type["name"],
+                                "relationship": f"indirect via {rel_type['name']}",
+                                "direction": "secondary",
+                                "level": 2
+                            })
+        
+        # If depth is 3, we would continue to get more indirect relationships
+        # This could be implemented recursively or iteratively
+        # For now, we'll stop at depth 2
         
         return related_elements
-    
-    def _generate_impact_analysis(self, context: Dict[str, Any]) -> Dict[str, Any]:
+
+    def _analyze_with_ai(self, element_data: Dict[str, Any], 
+                        related_elements: List[Dict[str, Any]],
+                        change_description: str, change_type: str) -> Dict[str, Any]:
         """Generate impact analysis using OpenAI.
         
         Args:
-            context: Context dictionary with element and change data
+            element_data: Data about the element being changed
+            related_elements: List of related elements
+            change_description: Description of the proposed change
+            change_type: Type of change (modify, replace, remove)
             
         Returns:
-            Impact analysis results
+            Dict containing the impact analysis
         """
-        # Create a prompt for OpenAI
-        prompt = f"""
-        Analyze the impact of the following change to an enterprise architecture element:
-        
-        Element Information:
-        - Name: {context['element']['name']}
-        - Type: {context['element']['type']}
-        - Description: {context['element']['description']}
-        
-        Proposed Change:
-        - Change Type: {context['change']['type']} (modify, replace, or remove)
-        - Change Description: {context['change']['description']}
-        
-        Analysis Depth: {context['analysis_depth']} (1=direct, 2=indirect, 3=comprehensive)
-        
-        Affected Elements:
-        {json.dumps([{
-            "id": e.get("id"),
-            "name": e.get("name"),
-            "type": e.get("type"),
-            "impact_level": e.get("impact_level"),
-            "relationship": e.get("relationship")
-        } for e in context['affected_elements']], indent=2)}
-        
-        Please provide a structured impact analysis with the following sections:
-        1. Executive Summary: A brief overview of the change and its potential impact
-        2. Impact Rating: A 1-5 scale rating (1=minimal, 5=severe) with justification
-        3. Affected Elements Analysis: Detailed analysis of how each affected element may be impacted
-        4. Risks and Issues: Potential risks and issues resulting from the change
-        5. Recommendations: Recommendations for mitigating risks and implementing the change effectively
-        
-        Format your response as a structured JSON object following this schema:
-        {
-            "executive_summary": "text",
-            "impact_rating": number,
-            "impact_justification": "text",
-            "affected_elements_analysis": [
-                {
-                    "element_id": "id",
-                    "element_name": "name",
-                    "impact_description": "description of impact",
-                    "impact_severity": "Low/Medium/High"
-                }
-            ],
-            "risks_and_issues": [
-                {
-                    "description": "risk description",
-                    "severity": "Low/Medium/High",
-                    "mitigation": "mitigation approach"
-                }
-            ],
-            "recommendations": [
-                "recommendation text"
-            ]
+        # Create a context for the AI
+        element_context = {
+            "element": element_data,
+            "change": {
+                "type": change_type,
+                "description": change_description
+            },
+            "related_elements": related_elements
         }
+        
+        # Create a prompt for the impact analysis
+        prompt = f"""
+        Please analyze the impact of the following change to an enterprise architecture element:
+        
+        ELEMENT DETAILS:
+        Name: {element_data['name']}
+        Type: {element_data['type']}
+        Description: {element_data['description']}
+        
+        PROPOSED CHANGE:
+        Type: {change_type}
+        Description: {change_description}
+        
+        RELATED ELEMENTS:
         """
         
-        # Call OpenAI API
-        response = self.openai.chat.completions.create(
+        # Add information about related elements
+        for rel in related_elements:
+            prompt += f"- {rel['name']} ({rel['type']}): {rel['relationship']} relationship, {rel['direction']}, level {rel['level']}\n"
+        
+        prompt += """
+        Please provide a comprehensive impact analysis including:
+        1. Direct impacts on related systems, processes, and stakeholders
+        2. Potential indirect impacts and cascading effects
+        3. Risk assessment (High/Medium/Low) with explanation
+        4. Recommended mitigation strategies
+        5. Implementation considerations
+        """
+        
+        # Get completion from OpenAI
+        response = self.client.chat.completions.create(
             model="gpt-4",
             messages=[
-                {"role": "system", "content": "You are an expert Enterprise Architecture impact analyst."},
+                {"role": "system", "content": "You are an expert enterprise architecture analyst specializing in impact analysis. Your job is to assess the potential impacts of architectural changes and provide actionable recommendations."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.7,
             max_tokens=2500
         )
         
-        # Extract the generated content
+        # Extract the analysis
         analysis_text = response.choices[0].message.content
         
-        # Parse the JSON response
+        # Now, use a follow-up request to structure the analysis as JSON
+        structured_prompt = f"""
+        Based on the following impact analysis, please provide a structured JSON response with the following sections:
+        1. direct_impacts (array of impact objects with 'area', 'severity', and 'description')
+        2. indirect_impacts (array of impact objects with 'area', 'severity', and 'description')
+        3. risk_assessment (object with 'overall_risk', 'explanation', and 'factors')
+        4. mitigation_strategies (array of strategy objects with 'strategy' and 'description')
+        5. implementation_considerations (array of consideration objects with 'area' and 'description')
+        
+        The analysis is:
+        {analysis_text}
+        """
+        
+        # Get structured response
+        structured_response = self.client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "You are an expert enterprise architecture analyst specializing in impact analysis. Your task is to structure impact analysis in JSON format."},
+                {"role": "user", "content": structured_prompt}
+            ],
+            temperature=0.3,
+            max_tokens=2000
+        )
+        
+        # Extract the JSON structure
+        json_text = structured_response.choices[0].message.content
+        
+        # Clean up the JSON string by removing markdown code blocks if present
+        if "```json" in json_text:
+            json_text = json_text.split("```json")[1].split("```")[0].strip()
+        elif "```" in json_text:
+            json_text = json_text.split("```")[1].split("```")[0].strip()
+        
         try:
-            # Clean up the text to ensure it's valid JSON
-            json_text = analysis_text
-            if "```json" in json_text:
-                json_text = json_text.split("```json")[1].split("```")[0].strip()
-            
-            analysis = json.loads(json_text)
-            return analysis
-        except Exception as e:
-            logger.error(f"Error parsing analysis JSON: {str(e)}")
-            return {
-                "error": "Failed to parse analysis JSON",
-                "raw_analysis": analysis_text
+            # Parse the JSON
+            structured_analysis = json.loads(json_text)
+        except json.JSONDecodeError:
+            # If JSON parsing fails, return the unstructured analysis
+            structured_analysis = {
+                "unstructured_analysis": analysis_text
             }
-    
-    def _save_analysis_result(self, element_id: str, change_description: str, 
-                             change_type: str, analysis: Dict[str, Any]) -> str:
-        """Save the impact analysis result to the database.
+        
+        # Return both the structured analysis and the original text
+        return {
+            "structured_analysis": structured_analysis,
+            "text_analysis": analysis_text,
+            "element_context": element_context
+        }
+
+    def _log_analysis(self, element_id: str, change_description: str, 
+                     change_type: str, analysis_depth: int):
+        """Log impact analysis in the database.
         
         Args:
-            element_id: UUID of the element being changed
-            change_description: Description of the proposed change
+            element_id: ID of the element
+            change_description: Description of the change
             change_type: Type of change
-            analysis: Analysis results dictionary
-            
-        Returns:
-            UUID of the saved analysis
+            analysis_depth: Depth of analysis
         """
         try:
-            now = datetime.now().isoformat()
-            analysis_id = str(uuid.uuid4())
-            
-            # Insert new analysis
-            result = self.supabase.table("ai_generated_content").insert({
-                "id": analysis_id,
+            # Insert a record into the ai_generated_content table
+            self.supabase.table("ai_generated_content").insert({
                 "content_type": "analysis",
                 "related_element_id": element_id,
-                "content": json.dumps(analysis),
                 "prompt": f"Analyze impact of {change_type} change: {change_description}",
+                "created_by": self.supabase.auth.get_user().user.id,  # This would need to be passed in or retrieved
                 "properties": {
                     "change_type": change_type,
-                    "change_description": change_description,
-                    "impact_rating": analysis.get("impact_rating"),
-                    "created_at": now
-                },
-                "applied": False,
-                "created_at": now,
-                "updated_at": now
+                    "analysis_depth": analysis_depth
+                }
             }).execute()
-            
-            return analysis_id
-                
         except Exception as e:
-            logger.error(f"Error saving impact analysis: {str(e)}")
-            return None
+            logger.error(f"Error logging impact analysis: {str(e)}")
+            # Continue even if logging fails
+            pass
