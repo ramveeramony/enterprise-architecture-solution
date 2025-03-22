@@ -5,452 +5,373 @@ This module provides services for EA model operations.
 """
 
 import logging
-import uuid
 from typing import Dict, List, Any, Optional
+import json
 from datetime import datetime
+
+from .base_service import BaseService
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class ModelService:
+class ModelService(BaseService):
     """Service for EA model operations."""
     
     def __init__(self, supabase_client):
-        """Initialize the Model Service.
+        """Initialize the model service.
         
         Args:
-            supabase_client: Configured Supabase client
+            supabase_client: A configured Supabase client for database operations
         """
-        self.supabase = supabase_client
+        super().__init__(supabase_client, 'ea_models')
+        # Initialize version history table
+        self.version_table = 'ea_model_versions'
     
-    async def get_models(self, user_id: str, filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-        """Get all EA models with optional filtering.
-        
-        Args:
-            user_id: ID of the requesting user
-            filters: Optional filters to apply
-            
-        Returns:
-            List of EA models
-        """
-        try:
-            query = self.supabase.table("ea_models").select("*, created_by(id, email), updated_by(id, email)")
-            
-            # Apply filters if provided
-            if filters:
-                if 'name' in filters:
-                    query = query.ilike('name', f'%{filters["name"]}%')
-                    
-                if 'status' in filters:
-                    query = query.eq('status', filters['status'])
-                    
-                if 'lifecycle_state' in filters:
-                    query = query.eq('lifecycle_state', filters['lifecycle_state'])
-            
-            # Execute the query
-            response = query.execute()
-            
-            if not response.data:
-                return []
-                
-            return response.data
-            
-        except Exception as e:
-            logger.error(f"Error getting models: {str(e)}")
-            raise
-    
-    async def get_model_by_id(self, model_id: str, user_id: str) -> Optional[Dict[str, Any]]:
-        """Get an EA model by ID.
-        
-        Args:
-            model_id: ID of the model to retrieve
-            user_id: ID of the requesting user
-            
-        Returns:
-            EA model if found, None otherwise
-        """
-        try:
-            response = self.supabase.table("ea_models") \
-                .select("*, created_by(id, email), updated_by(id, email)") \
-                .eq("id", model_id) \
-                .execute()
-            
-            if not response.data:
-                return None
-                
-            return response.data[0]
-            
-        except Exception as e:
-            logger.error(f"Error getting model by ID: {str(e)}")
-            raise
-    
-    async def create_model(self, model_data: Dict[str, Any], user_id: str) -> Dict[str, Any]:
+    async def create_model(self, data: Dict[str, Any], user_id: str) -> Dict[str, Any]:
         """Create a new EA model.
         
         Args:
-            model_data: Model data to create
+            data: Model data
             user_id: ID of the user creating the model
             
         Returns:
             Created model
         """
         try:
-            # Prepare the model data
-            new_model = {
-                "name": model_data["name"],
-                "description": model_data.get("description"),
-                "status": model_data.get("status", "draft"),
-                "version": model_data.get("version", "1.0"),
-                "lifecycle_state": model_data.get("lifecycle_state", "current"),
-                "properties": model_data.get("properties", {}),
-                "created_by": user_id
-            }
+            # Validate required fields
+            required_fields = ['name']
+            for field in required_fields:
+                if field not in data or not data[field]:
+                    raise ValueError(f"Field '{field}' is required")
             
-            # Insert the model
-            response = self.supabase.table("ea_models").insert(new_model).execute()
+            # Set default values
+            if 'status' not in data or not data['status']:
+                data['status'] = 'draft'
             
-            if not response.data:
-                raise Exception("Failed to create model")
-                
-            # Get the created model with user information
-            created_model = await self.get_model_by_id(response.data[0]["id"], user_id)
+            if 'version' not in data or not data['version']:
+                data['version'] = '1.0'
             
-            return created_model
+            if 'lifecycle_state' not in data or not data['lifecycle_state']:
+                data['lifecycle_state'] = 'current'
             
+            # Create model
+            model = await self.create(data, user_id)
+            
+            # Create initial version
+            await self._create_version(model, user_id, 'Initial version')
+            
+            return model
+        
         except Exception as e:
             logger.error(f"Error creating model: {str(e)}")
             raise
     
-    async def update_model(self, model_id: str, model_data: Dict[str, Any], user_id: str) -> Dict[str, Any]:
-        """Update an existing EA model.
+    async def update_model(self, id: str, data: Dict[str, Any], user_id: str, change_description: str = 'Update') -> Dict[str, Any]:
+        """Update an EA model.
         
         Args:
-            model_id: ID of the model to update
-            model_data: Updated model data
+            id: Model ID
+            data: Updated model data
             user_id: ID of the user updating the model
+            change_description: Description of the changes made
             
         Returns:
             Updated model
         """
         try:
-            # Check if the model exists
-            existing_model = await self.get_model_by_id(model_id, user_id)
+            # Get current model
+            current_model = await self.get_by_id(id)
             
-            if not existing_model:
-                raise Exception(f"Model with ID {model_id} not found")
+            if not current_model:
+                raise ValueError(f"Model {id} not found")
             
-            # Prepare the update data
-            update_data = {
-                "updated_at": datetime.now().isoformat(),
-                "updated_by": user_id
-            }
+            # Update model
+            updated_model = await self.update(id, data, user_id)
             
-            # Add fields to update if they are provided
-            if "name" in model_data:
-                update_data["name"] = model_data["name"]
-                
-            if "description" in model_data:
-                update_data["description"] = model_data["description"]
-                
-            if "status" in model_data:
-                update_data["status"] = model_data["status"]
-                
-            if "version" in model_data:
-                update_data["version"] = model_data["version"]
-                
-            if "lifecycle_state" in model_data:
-                update_data["lifecycle_state"] = model_data["lifecycle_state"]
-                
-            if "properties" in model_data:
-                update_data["properties"] = model_data["properties"]
-            
-            # Update the model
-            response = self.supabase.table("ea_models") \
-                .update(update_data) \
-                .eq("id", model_id) \
-                .execute()
-            
-            if not response.data:
-                raise Exception(f"Failed to update model with ID {model_id}")
-                
-            # Get the updated model with user information
-            updated_model = await self.get_model_by_id(model_id, user_id)
+            # Create version
+            await self._create_version(updated_model, user_id, change_description)
             
             return updated_model
-            
+        
         except Exception as e:
-            logger.error(f"Error updating model: {str(e)}")
+            logger.error(f"Error updating model {id}: {str(e)}")
             raise
     
-    async def delete_model(self, model_id: str, user_id: str) -> bool:
+    async def delete_model(self, id: str, user_id: str) -> bool:
         """Delete an EA model.
         
         Args:
-            model_id: ID of the model to delete
+            id: Model ID
             user_id: ID of the user deleting the model
             
         Returns:
-            True if deleted successfully
+            True if deleted, False otherwise
         """
         try:
-            # Check if the model exists
-            existing_model = await self.get_model_by_id(model_id, user_id)
+            # Check for related elements
+            elements = await self.supabase.table('ea_elements').select('id').eq('model_id', id).execute()
             
-            if not existing_model:
-                raise Exception(f"Model with ID {model_id} not found")
+            if elements.data and len(elements.data) > 0:
+                raise ValueError(f"Cannot delete model {id} with associated elements")
             
-            # First, check for dependencies
-            # Check for elements
-            elements_response = self.supabase.table("ea_elements") \
-                .select("id") \
-                .eq("model_id", model_id) \
-                .execute()
+            # Delete versions
+            await self.supabase.table(self.version_table).delete().eq('model_id', id).execute()
             
-            if elements_response.data and len(elements_response.data) > 0:
-                raise Exception(f"Cannot delete model with ID {model_id} because it has associated elements")
-            
-            # Check for views
-            views_response = self.supabase.table("ea_views") \
-                .select("id") \
-                .eq("model_id", model_id) \
-                .execute()
-            
-            if views_response.data and len(views_response.data) > 0:
-                raise Exception(f"Cannot delete model with ID {model_id} because it has associated views")
-            
-            # Delete the model
-            response = self.supabase.table("ea_models") \
-                .delete() \
-                .eq("id", model_id) \
-                .execute()
-            
-            return True
-            
+            # Delete model
+            return await self.delete(id)
+        
         except Exception as e:
-            logger.error(f"Error deleting model: {str(e)}")
+            logger.error(f"Error deleting model {id}: {str(e)}")
             raise
     
-    async def clone_model(self, model_id: str, new_name: str, user_id: str) -> Dict[str, Any]:
-        """Clone an existing EA model.
+    async def get_version_history(self, id: str) -> List[Dict[str, Any]]:
+        """Get version history for a model.
         
         Args:
-            model_id: ID of the model to clone
-            new_name: Name for the cloned model
-            user_id: ID of the user cloning the model
+            id: Model ID
             
         Returns:
-            Cloned model
+            List of versions
         """
         try:
-            # Get the model to clone
-            source_model = await self.get_model_by_id(model_id, user_id)
+            result = self.supabase.table(self.version_table).select('*').eq('model_id', id).order('created_at', desc=True).execute()
             
-            if not source_model:
-                raise Exception(f"Model with ID {model_id} not found")
+            return result.data if result.data else []
+        
+        except Exception as e:
+            logger.error(f"Error getting version history for model {id}: {str(e)}")
+            raise
+    
+    async def get_model_with_details(self, id: str) -> Dict[str, Any]:
+        """Get a model with detailed information.
+        
+        Args:
+            id: Model ID
             
-            # Create a new model based on the source
-            new_model = {
-                "name": new_name,
-                "description": source_model["description"],
-                "status": "draft",  # Always start as draft
-                "version": f"{source_model['version']}-clone",
-                "lifecycle_state": source_model["lifecycle_state"],
-                "properties": source_model["properties"],
-                "created_by": user_id
+        Returns:
+            Model with details
+        """
+        try:
+            # Get model
+            model = await self.get_by_id(id)
+            
+            if not model:
+                raise ValueError(f"Model {id} not found")
+            
+            # Get element counts by type
+            element_counts_query = """
+            SELECT et.name as type_name, COUNT(*) as count
+            FROM ea_elements e
+            JOIN ea_element_types et ON e.type_id = et.id
+            WHERE e.model_id = ?
+            GROUP BY et.name
+            """
+            element_counts = await self.supabase.rpc('run_sql', {'query': element_counts_query, 'params': [id]}).execute()
+            
+            # Get relationship counts by type
+            relationship_counts_query = """
+            SELECT rt.name as type_name, COUNT(*) as count
+            FROM ea_relationships r
+            JOIN ea_relationship_types rt ON r.relationship_type_id = rt.id
+            WHERE r.model_id = ?
+            GROUP BY rt.name
+            """
+            relationship_counts = await self.supabase.rpc('run_sql', {'query': relationship_counts_query, 'params': [id]}).execute()
+            
+            # Get views
+            views = await self.supabase.table('ea_views').select('*').eq('model_id', id).execute()
+            
+            # Combine all information
+            return {
+                **model,
+                'element_counts': element_counts.data if element_counts.data else [],
+                'relationship_counts': relationship_counts.data if relationship_counts.data else [],
+                'views': views.data if views.data else []
+            }
+        
+        except Exception as e:
+            logger.error(f"Error getting model with details {id}: {str(e)}")
+            raise
+    
+    async def change_lifecycle_state(
+        self, 
+        id: str, 
+        new_state: str, 
+        user_id: str,
+        change_description: str = 'Changed lifecycle state'
+    ) -> Dict[str, Any]:
+        """Change the lifecycle state of a model.
+        
+        Args:
+            id: Model ID
+            new_state: New lifecycle state (current, target, transitional)
+            user_id: ID of the user changing the state
+            change_description: Description of the change
+            
+        Returns:
+            Updated model
+        """
+        try:
+            # Validate state
+            valid_states = ['current', 'target', 'transitional']
+            if new_state not in valid_states:
+                raise ValueError(f"Invalid lifecycle state: {new_state}")
+            
+            # Update model
+            updated_model = await self.update(id, {'lifecycle_state': new_state}, user_id)
+            
+            # Create version
+            await self._create_version(updated_model, user_id, change_description)
+            
+            return updated_model
+        
+        except Exception as e:
+            logger.error(f"Error changing lifecycle state for model {id}: {str(e)}")
+            raise
+    
+    async def create_model_snapshot(self, id: str, user_id: str, description: str) -> Dict[str, Any]:
+        """Create a snapshot of a model.
+        
+        Args:
+            id: Model ID
+            user_id: ID of the user creating the snapshot
+            description: Snapshot description
+            
+        Returns:
+            Created snapshot
+        """
+        try:
+            # Get model
+            model = await self.get_by_id(id)
+            
+            if not model:
+                raise ValueError(f"Model {id} not found")
+            
+            # Create snapshot version
+            snapshot = await self._create_version(model, user_id, description, is_snapshot=True)
+            
+            return snapshot
+        
+        except Exception as e:
+            logger.error(f"Error creating snapshot for model {id}: {str(e)}")
+            raise
+    
+    async def _create_version(
+        self, 
+        model: Dict[str, Any], 
+        user_id: str, 
+        change_description: str,
+        is_snapshot: bool = False
+    ) -> Dict[str, Any]:
+        """Create a version record for a model.
+        
+        Args:
+            model: Model data
+            user_id: ID of the user creating the version
+            change_description: Description of the changes
+            is_snapshot: Whether this is a snapshot
+            
+        Returns:
+            Created version
+        """
+        try:
+            # Get elements and relationships for model
+            elements = await self.supabase.table('ea_elements').select('*').eq('model_id', model['id']).execute()
+            relationships = await self.supabase.table('ea_relationships').select('*').eq('model_id', model['id']).execute()
+            views = await self.supabase.table('ea_views').select('*').eq('model_id', model['id']).execute()
+            
+            # Create version
+            version_data = {
+                'model_id': model['id'],
+                'model_data': model,
+                'elements': elements.data if elements.data else [],
+                'relationships': relationships.data if relationships.data else [],
+                'views': views.data if views.data else [],
+                'change_description': change_description,
+                'created_by': user_id,
+                'created_at': datetime.now().isoformat(),
+                'is_snapshot': is_snapshot
             }
             
-            # Insert the cloned model
-            response = self.supabase.table("ea_models").insert(new_model).execute()
+            result = await self.supabase.table(self.version_table).insert(version_data).execute()
             
-            if not response.data:
-                raise Exception("Failed to clone model")
+            if not result.data:
+                raise ValueError(f"Failed to create version for model {model['id']}")
                 
-            cloned_model_id = response.data[0]["id"]
-            
-            # Get the elements from the source model
-            elements_response = self.supabase.table("ea_elements") \
-                .select("*") \
-                .eq("model_id", model_id) \
-                .execute()
-            
-            if elements_response.data:
-                # Map of old element IDs to new element IDs
-                element_id_map = {}
-                
-                # Clone each element
-                for element in elements_response.data:
-                    # Create a new element based on the source
-                    new_element = {
-                        "model_id": cloned_model_id,
-                        "type_id": element["type_id"],
-                        "name": element["name"],
-                        "description": element["description"],
-                        "status": "draft",  # Always start as draft
-                        "external_id": element["external_id"],
-                        "external_source": element["external_source"],
-                        "properties": element["properties"],
-                        "position_x": element["position_x"],
-                        "position_y": element["position_y"],
-                        "created_by": user_id
-                    }
-                    
-                    # Insert the cloned element
-                    new_element_response = self.supabase.table("ea_elements").insert(new_element).execute()
-                    
-                    if new_element_response.data:
-                        # Add to the ID map
-                        element_id_map[element["id"]] = new_element_response.data[0]["id"]
-                
-                # Get the relationships from the source model
-                relationships_response = self.supabase.table("ea_relationships") \
-                    .select("*") \
-                    .eq("model_id", model_id) \
-                    .execute()
-                
-                if relationships_response.data:
-                    # Clone each relationship
-                    for relationship in relationships_response.data:
-                        # Only clone relationships where both elements were cloned
-                        if relationship["source_element_id"] in element_id_map and relationship["target_element_id"] in element_id_map:
-                            # Create a new relationship based on the source
-                            new_relationship = {
-                                "model_id": cloned_model_id,
-                                "relationship_type_id": relationship["relationship_type_id"],
-                                "source_element_id": element_id_map[relationship["source_element_id"]],
-                                "target_element_id": element_id_map[relationship["target_element_id"]],
-                                "name": relationship["name"],
-                                "description": relationship["description"],
-                                "status": "draft",  # Always start as draft
-                                "properties": relationship["properties"],
-                                "created_by": user_id
-                            }
-                            
-                            # Insert the cloned relationship
-                            self.supabase.table("ea_relationships").insert(new_relationship).execute()
-            
-            # Get the views from the source model
-            views_response = self.supabase.table("ea_views") \
-                .select("*") \
-                .eq("model_id", model_id) \
-                .execute()
-            
-            if views_response.data:
-                # Clone each view
-                for view in views_response.data:
-                    # Create a new view based on the source
-                    new_view = {
-                        "model_id": cloned_model_id,
-                        "name": view["name"],
-                        "description": view["description"],
-                        "view_type": view["view_type"],
-                        "configuration": view["configuration"],
-                        "created_by": user_id
-                    }
-                    
-                    # Insert the cloned view
-                    self.supabase.table("ea_views").insert(new_view).execute()
-            
-            # Get the cloned model with user information
-            cloned_model = await self.get_model_by_id(cloned_model_id, user_id)
-            
-            return cloned_model
-            
+            return result.data[0]
+        
         except Exception as e:
-            logger.error(f"Error cloning model: {str(e)}")
+            logger.error(f"Error creating version for model {model['id']}: {str(e)}")
             raise
     
-    async def get_model_version_history(self, model_id: str, user_id: str) -> List[Dict[str, Any]]:
-        """Get the version history of an EA model.
+    async def restore_version(self, model_id: str, version_id: str, user_id: str) -> Dict[str, Any]:
+        """Restore a model from a version.
         
         Args:
-            model_id: ID of the model
-            user_id: ID of the requesting user
+            model_id: Model ID
+            version_id: Version ID
+            user_id: ID of the user restoring the version
             
         Returns:
-            List of model versions
+            Restored model
         """
         try:
-            # Get the current model
-            current_model = await self.get_model_by_id(model_id, user_id)
+            # Get version
+            version_result = await self.supabase.table(self.version_table).select('*').eq('id', version_id).eq('model_id', model_id).execute()
+            
+            if not version_result.data or len(version_result.data) == 0:
+                raise ValueError(f"Version {version_id} not found for model {model_id}")
+                
+            version = version_result.data[0]
+            
+            # Get current model
+            current_model = await self.get_by_id(model_id)
             
             if not current_model:
-                raise Exception(f"Model with ID {model_id} not found")
+                raise ValueError(f"Model {model_id} not found")
             
-            # Get the base name (without version)
-            base_name = current_model["name"].split(" v")[0]
+            # Create snapshot of current state before restoring
+            await self._create_version(
+                current_model, 
+                user_id, 
+                f"Automatic snapshot before restoring version {version_id}",
+                is_snapshot=True
+            )
             
-            # Find all models with the same base name
-            response = self.supabase.table("ea_models") \
-                .select("*, created_by(id, email), updated_by(id, email)") \
-                .ilike("name", f"{base_name}%") \
-                .order("created_at", {"ascending": False}) \
-                .execute()
+            # Extract data from version
+            model_data = version['model_data']
+            elements_data = version['elements']
+            relationships_data = version['relationships']
+            views_data = version['views']
             
-            if not response.data:
-                # At minimum, return the current model as a version
-                return [current_model]
-                
-            return response.data
+            # Update model
+            updated_model = await self.update(model_id, model_data, user_id)
             
-        except Exception as e:
-            logger.error(f"Error getting model version history: {str(e)}")
-            raise
-    
-    async def create_model_version(self, model_id: str, version: str, user_id: str) -> Dict[str, Any]:
-        """Create a new version of an EA model.
+            # Delete current elements, relationships, and views
+            await self.supabase.table('ea_elements').delete().eq('model_id', model_id).execute()
+            await self.supabase.table('ea_relationships').delete().eq('model_id', model_id).execute()
+            await self.supabase.table('ea_views').delete().eq('model_id', model_id).execute()
+            
+            # Restore elements, relationships, and views
+            if elements_data and len(elements_data) > 0:
+                await self.supabase.table('ea_elements').insert(elements_data).execute()
+            
+            if relationships_data and len(relationships_data) > 0:
+                await self.supabase.table('ea_relationships').insert(relationships_data).execute()
+            
+            if views_data and len(views_data) > 0:
+                await self.supabase.table('ea_views').insert(views_data).execute()
+            
+            # Create version for restoration
+            await self._create_version(
+                updated_model, 
+                user_id, 
+                f"Restored from version {version_id}"
+            )
+            
+            return updated_model
         
-        Args:
-            model_id: ID of the model to version
-            version: Version number/string
-            user_id: ID of the user creating the version
-            
-        Returns:
-            New model version
-        """
-        try:
-            # Get the model to version
-            source_model = await self.get_model_by_id(model_id, user_id)
-            
-            if not source_model:
-                raise Exception(f"Model with ID {model_id} not found")
-            
-            # Create a name for the new version
-            base_name = source_model["name"].split(" v")[0]
-            new_name = f"{base_name} v{version}"
-            
-            # Clone the model with the new name and version
-            new_model = {
-                "name": new_name,
-                "description": source_model["description"],
-                "status": "draft",  # Always start as draft
-                "version": version,
-                "lifecycle_state": source_model["lifecycle_state"],
-                "properties": source_model["properties"],
-                "created_by": user_id
-            }
-            
-            # Insert the new version
-            response = self.supabase.table("ea_models").insert(new_model).execute()
-            
-            if not response.data:
-                raise Exception("Failed to create model version")
-                
-            # Now clone all the elements, relationships, and views (reusing the clone logic)
-            new_model_id = response.data[0]["id"]
-            cloned_model = await self.clone_model(model_id, new_name, user_id)
-            
-            # Update the version information
-            update_response = self.supabase.table("ea_models") \
-                .update({"version": version}) \
-                .eq("id", new_model_id) \
-                .execute()
-            
-            # Get the new version with user information
-            new_version = await self.get_model_by_id(new_model_id, user_id)
-            
-            return new_version
-            
         except Exception as e:
-            logger.error(f"Error creating model version: {str(e)}")
+            logger.error(f"Error restoring version {version_id} for model {model_id}: {str(e)}")
             raise
