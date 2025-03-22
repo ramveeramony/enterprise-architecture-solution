@@ -12,6 +12,7 @@ import Modeling from './pages/Modeling';
 import Repository from './pages/Repository';
 import Integration from './pages/Integration';
 import Settings from './pages/Settings';
+import GenAIPage from './pages/GenAIPage';
 import Login from './pages/Login';
 import NotFound from './pages/NotFound';
 
@@ -57,6 +58,7 @@ const App = () => {
           <Route path="/modeling" element={isAuthenticated ? <Modeling /> : <Navigate to="/login" />} />
           <Route path="/repository" element={isAuthenticated ? <Repository /> : <Navigate to="/login" />} />
           <Route path="/integration" element={isAuthenticated ? <Integration /> : <Navigate to="/login" />} />
+          <Route path="/genai" element={isAuthenticated ? <GenAIPage /> : <Navigate to="/login" />} />
           <Route path="/settings" element={isAuthenticated ? <Settings /> : <Navigate to="/login" />} />
         </Route>
 
