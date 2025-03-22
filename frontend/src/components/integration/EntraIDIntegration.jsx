@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { Card, Button, Table, Badge, Spinner, Alert, Tabs, TextInput, Label, Avatar } from 'flowbite-react';
-import { FiRefreshCw, FiEdit, FiPlus, FiAlertCircle, FiCheckCircle, FiUser, FiUsers, FiSearch } from 'react-icons/fi';
+import { FiRefreshCw, FiEdit, FiPlus, FiAlertCircle, FiCheckCircle, FiUser, FiUsers, FiUserPlus, FiSearch } from 'react-icons/fi';
 import { useQuery } from '@tanstack/react-query';
 
 import IntegrationForm from './IntegrationForm';
@@ -12,6 +12,7 @@ const EntraIDIntegration = ({ integration, onSave }) => {
   const [syncInProgress, setSyncInProgress] = useState(false);
   const [syncResult, setSyncResult] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [selectedUser, setSelectedUser] = useState(null);
 
   // Fetch users from Entra ID
   const { 
@@ -77,6 +78,21 @@ const EntraIDIntegration = ({ integration, onSave }) => {
     }
   };
 
+  // Handle role assignment
+  const handleRoleAssignment = async (userId, role) => {
+    if (!integration?.id || !userId) return;
+    
+    try {
+      await integrationApi.assignUserRole(integration.id, userId, role);
+      refetchUsers();
+    } catch (error) {
+      setSyncResult({
+        success: false,
+        message: `Failed to assign role: ${error.message}`
+      });
+    }
+  };
+
   // Format date
   const formatDate = (dateString) => {
     if (!dateString) return 'N/A';
@@ -89,13 +105,19 @@ const EntraIDIntegration = ({ integration, onSave }) => {
     if (!searchQuery) return items;
     
     return items.filter(item => {
-      const searchTerms = searchQuery.toLowerCase().split(' ');
-      const itemText = `${item.displayName || ''} ${item.mail || ''} ${item.jobTitle || ''} ${item.department || ''}`.toLowerCase();
-      return searchTerms.every(term => itemText.includes(term));
+      const lowerCaseSearch = searchQuery.toLowerCase();
+      return (
+        (item.displayName && item.displayName.toLowerCase().includes(lowerCaseSearch)) ||
+        (item.givenName && item.givenName.toLowerCase().includes(lowerCaseSearch)) ||
+        (item.surname && item.surname.toLowerCase().includes(lowerCaseSearch)) ||
+        (item.mail && item.mail.toLowerCase().includes(lowerCaseSearch)) ||
+        (item.userPrincipalName && item.userPrincipalName.toLowerCase().includes(lowerCaseSearch)) ||
+        (item.description && item.description.toLowerCase().includes(lowerCaseSearch))
+      );
     });
   };
 
-  // Get filtered items based on active tab
+  // Filtered items based on active tab
   const filteredItems = activeTab === 'users' 
     ? filterItems(users) 
     : activeTab === 'groups' 
@@ -120,12 +142,12 @@ const EntraIDIntegration = ({ integration, onSave }) => {
     return (
       <Card>
         <div className="text-center py-8">
-          <FiUsers className="mx-auto h-12 w-12 text-gray-400 mb-4" />
+          <FiUser className="mx-auto h-12 w-12 text-gray-400 mb-4" />
           <h5 className="text-xl font-bold text-gray-900 dark:text-white mb-2">
             No Microsoft Entra ID Integration Configured
           </h5>
           <p className="text-gray-500 dark:text-gray-400 mb-4">
-            Connect to Microsoft Entra ID to synchronize users and groups with your Enterprise Architecture solution.
+            Connect to Microsoft Entra ID to synchronize users and enable single sign-on.
           </p>
           <Button onClick={() => setIsConfiguring(true)}>
             <FiPlus className="mr-2 h-5 w-5" />
@@ -192,12 +214,106 @@ const EntraIDIntegration = ({ integration, onSave }) => {
           </Alert>
         )}
 
+        {selectedUser && (
+          <div className="mb-4">
+            <Card>
+              <div className="flex justify-between items-center mb-4">
+                <h4 className="text-lg font-bold text-gray-900 dark:text-white">
+                  User Details: {selectedUser.displayName}
+                </h4>
+                <Button color="light" size="xs" onClick={() => setSelectedUser(null)}>
+                  Close
+                </Button>
+              </div>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="flex flex-col items-center">
+                  <Avatar 
+                    size="xl"
+                    img={selectedUser.profilePhoto || null}
+                    rounded
+                    alt={selectedUser.displayName}
+                    className="mb-3"
+                  >
+                    {!selectedUser.profilePhoto && selectedUser.displayName?.charAt(0).toUpperCase()}
+                  </Avatar>
+                  <h5 className="text-lg font-semibold mb-1">{selectedUser.displayName}</h5>
+                  <p className="text-gray-500 mb-3">{selectedUser.jobTitle || 'No job title'}</p>
+                  
+                  <div className="w-full mt-4">
+                    <h6 className="font-medium mb-2">Role Assignment</h6>
+                    <div className="flex gap-2">
+                      <Button 
+                        size="sm" 
+                        color={selectedUser.role === 'admin' ? 'dark' : 'light'} 
+                        onClick={() => handleRoleAssignment(selectedUser.id, 'admin')}
+                      >
+                        Admin
+                      </Button>
+                      <Button 
+                        size="sm" 
+                        color={selectedUser.role === 'editor' ? 'dark' : 'light'}
+                        onClick={() => handleRoleAssignment(selectedUser.id, 'editor')}
+                      >
+                        Editor
+                      </Button>
+                      <Button 
+                        size="sm" 
+                        color={selectedUser.role === 'viewer' ? 'dark' : 'light'}
+                        onClick={() => handleRoleAssignment(selectedUser.id, 'viewer')}
+                      >
+                        Viewer
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+                
+                <div>
+                  <Table>
+                    <Table.Body className="divide-y">
+                      <Table.Row className="bg-white dark:bg-gray-800">
+                        <Table.Cell className="font-medium">Email</Table.Cell>
+                        <Table.Cell>{selectedUser.mail || selectedUser.userPrincipalName || 'N/A'}</Table.Cell>
+                      </Table.Row>
+                      <Table.Row className="bg-white dark:bg-gray-800">
+                        <Table.Cell className="font-medium">Username</Table.Cell>
+                        <Table.Cell>{selectedUser.userPrincipalName || 'N/A'}</Table.Cell>
+                      </Table.Row>
+                      <Table.Row className="bg-white dark:bg-gray-800">
+                        <Table.Cell className="font-medium">Department</Table.Cell>
+                        <Table.Cell>{selectedUser.department || 'N/A'}</Table.Cell>
+                      </Table.Row>
+                      <Table.Row className="bg-white dark:bg-gray-800">
+                        <Table.Cell className="font-medium">Office</Table.Cell>
+                        <Table.Cell>{selectedUser.officeLocation || 'N/A'}</Table.Cell>
+                      </Table.Row>
+                      <Table.Row className="bg-white dark:bg-gray-800">
+                        <Table.Cell className="font-medium">Phone</Table.Cell>
+                        <Table.Cell>{selectedUser.businessPhones?.[0] || 'N/A'}</Table.Cell>
+                      </Table.Row>
+                      <Table.Row className="bg-white dark:bg-gray-800">
+                        <Table.Cell className="font-medium">Account Created</Table.Cell>
+                        <Table.Cell>{formatDate(selectedUser.createdDateTime)}</Table.Cell>
+                      </Table.Row>
+                      <Table.Row className="bg-white dark:bg-gray-800">
+                        <Table.Cell className="font-medium">Last Sign In</Table.Cell>
+                        <Table.Cell>{formatDate(selectedUser.signInActivity?.lastSignInDateTime) || 'N/A'}</Table.Cell>
+                      </Table.Row>
+                    </Table.Body>
+                  </Table>
+                </div>
+              </div>
+            </Card>
+          </div>
+        )}
+
         <Tabs.Group
           aria-label="Integration tabs"
           style="underline"
           onActiveTabChange={(index) => {
             const tabs = ['summary', 'users', 'groups', 'history'];
             setActiveTab(tabs[index]);
+            setSelectedUser(null);
           }}
         >
           <Tabs.Item active title="Summary">
@@ -212,11 +328,15 @@ const EntraIDIntegration = ({ integration, onSave }) => {
                         <Table.Cell>{integration.configuration?.tenant_id || 'Not configured'}</Table.Cell>
                       </Table.Row>
                       <Table.Row className="bg-white dark:bg-gray-800">
-                        <Table.Cell className="font-medium">Synchronize Users</Table.Cell>
+                        <Table.Cell className="font-medium">Client ID</Table.Cell>
+                        <Table.Cell>{integration.configuration?.client_id || 'Not configured'}</Table.Cell>
+                      </Table.Row>
+                      <Table.Row className="bg-white dark:bg-gray-800">
+                        <Table.Cell className="font-medium">Sync Users</Table.Cell>
                         <Table.Cell>{integration.configuration?.sync_users ? 'Yes' : 'No'}</Table.Cell>
                       </Table.Row>
                       <Table.Row className="bg-white dark:bg-gray-800">
-                        <Table.Cell className="font-medium">Synchronize Groups</Table.Cell>
+                        <Table.Cell className="font-medium">Sync Groups</Table.Cell>
                         <Table.Cell>{integration.configuration?.sync_groups ? 'Yes' : 'No'}</Table.Cell>
                       </Table.Row>
                     </Table.Body>
@@ -257,20 +377,28 @@ const EntraIDIntegration = ({ integration, onSave }) => {
           </Tabs.Item>
           
           <Tabs.Item title="Users">
-            <div className="mb-4">
-              <div className="flex items-center gap-4">
-                <div className="relative flex-1">
+            <div className="mb-4 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+              <div className="flex-1">
+                <div className="relative">
                   <div className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
-                    <FiSearch className="w-5 h-5 text-gray-500 dark:text-gray-400" />
+                    <FiSearch className="w-5 h-5 text-gray-500" />
                   </div>
                   <TextInput
+                    id="user-search"
                     type="search"
-                    placeholder="Search users by name, email or department..."
+                    placeholder="Search users by name or email..."
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    className="pl-10"
+                    className="pl-10 w-full"
                   />
                 </div>
+              </div>
+              
+              <div>
+                <Button color="light">
+                  <FiUserPlus className="mr-2 h-5 w-5" />
+                  Import Users
+                </Button>
               </div>
             </div>
             
@@ -285,7 +413,7 @@ const EntraIDIntegration = ({ integration, onSave }) => {
                 </p>
                 <Button onClick={handleSync} disabled={syncInProgress}>
                   <FiRefreshCw className="mr-2 h-5 w-5" />
-                  Sync Now
+                  Sync Users
                 </Button>
               </div>
             ) : (
@@ -294,35 +422,37 @@ const EntraIDIntegration = ({ integration, onSave }) => {
                   <Table.Head>
                     <Table.HeadCell>User</Table.HeadCell>
                     <Table.HeadCell>Email</Table.HeadCell>
-                    <Table.HeadCell>Job Title</Table.HeadCell>
+                    <Table.HeadCell>Role</Table.HeadCell>
                     <Table.HeadCell>Department</Table.HeadCell>
                     <Table.HeadCell>Status</Table.HeadCell>
+                    <Table.HeadCell>Actions</Table.HeadCell>
                   </Table.Head>
                   <Table.Body className="divide-y">
                     {filteredItems.map((user) => (
                       <Table.Row key={user.id} className="bg-white dark:bg-gray-800">
                         <Table.Cell className="font-medium">
                           <div className="flex items-center">
-                            <Avatar
-                              img={user.photoUrl || null}
-                              alt={user.displayName || 'User avatar'}
-                              rounded
-                              size="sm"
-                              className="mr-3"
-                            >
-                              {!user.photoUrl && (
-                                <div className="w-full h-full flex items-center justify-center bg-blue-600">
-                                  <span className="text-white">
-                                    {user.displayName ? user.displayName.charAt(0).toUpperCase() : 'U'}
-                                  </span>
-                                </div>
-                              )}
+                            <Avatar size="sm" img={user.profilePhoto || null} rounded className="mr-3">
+                              {!user.profilePhoto && user.displayName?.charAt(0).toUpperCase()}
                             </Avatar>
-                            {user.displayName}
+                            <div>
+                              <div className="font-medium">{user.displayName}</div>
+                              <div className="text-xs text-gray-500">{user.jobTitle || 'No title'}</div>
+                            </div>
                           </div>
                         </Table.Cell>
-                        <Table.Cell>{user.mail || 'No email'}</Table.Cell>
-                        <Table.Cell>{user.jobTitle || 'N/A'}</Table.Cell>
+                        <Table.Cell>{user.mail || user.userPrincipalName}</Table.Cell>
+                        <Table.Cell>
+                          <Badge
+                            color={
+                              user.role === 'admin' ? 'red' :
+                              user.role === 'editor' ? 'blue' :
+                              'gray'
+                            }
+                          >
+                            {user.role || 'Not assigned'}
+                          </Badge>
+                        </Table.Cell>
                         <Table.Cell>{user.department || 'N/A'}</Table.Cell>
                         <Table.Cell>
                           <Badge 
@@ -330,6 +460,14 @@ const EntraIDIntegration = ({ integration, onSave }) => {
                           >
                             {user.accountEnabled ? 'Active' : 'Disabled'}
                           </Badge>
+                        </Table.Cell>
+                        <Table.Cell>
+                          <Button 
+                            size="xs" 
+                            onClick={() => setSelectedUser(user)}
+                          >
+                            View Details
+                          </Button>
                         </Table.Cell>
                       </Table.Row>
                     ))}
@@ -341,19 +479,18 @@ const EntraIDIntegration = ({ integration, onSave }) => {
           
           <Tabs.Item title="Groups">
             <div className="mb-4">
-              <div className="flex items-center gap-4">
-                <div className="relative flex-1">
-                  <div className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
-                    <FiSearch className="w-5 h-5 text-gray-500 dark:text-gray-400" />
-                  </div>
-                  <TextInput
-                    type="search"
-                    placeholder="Search groups by name or description..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="pl-10"
-                  />
+              <div className="relative">
+                <div className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
+                  <FiSearch className="w-5 h-5 text-gray-500" />
                 </div>
+                <TextInput
+                  id="group-search"
+                  type="search"
+                  placeholder="Search groups..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="pl-10 w-full"
+                />
               </div>
             </div>
             
@@ -368,7 +505,7 @@ const EntraIDIntegration = ({ integration, onSave }) => {
                 </p>
                 <Button onClick={handleSync} disabled={syncInProgress}>
                   <FiRefreshCw className="mr-2 h-5 w-5" />
-                  Sync Now
+                  Sync Groups
                 </Button>
               </div>
             ) : (
@@ -377,8 +514,9 @@ const EntraIDIntegration = ({ integration, onSave }) => {
                   <Table.Head>
                     <Table.HeadCell>Name</Table.HeadCell>
                     <Table.HeadCell>Description</Table.HeadCell>
-                    <Table.HeadCell>Type</Table.HeadCell>
                     <Table.HeadCell>Members</Table.HeadCell>
+                    <Table.HeadCell>Type</Table.HeadCell>
+                    <Table.HeadCell>Created</Table.HeadCell>
                   </Table.Head>
                   <Table.Body className="divide-y">
                     {filteredItems.map((group) => (
@@ -390,12 +528,21 @@ const EntraIDIntegration = ({ integration, onSave }) => {
                           </div>
                         </Table.Cell>
                         <Table.Cell>{group.description || 'No description'}</Table.Cell>
-                        <Table.Cell>{group.groupTypes?.join(', ') || 'Security'}</Table.Cell>
+                        <Table.Cell>{group.members?.length || 0}</Table.Cell>
                         <Table.Cell>
-                          <Badge color="info">
-                            {group.memberCount || '0'} users
+                          <Badge 
+                            color={
+                              group.securityEnabled ? 'blue' :
+                              group.mailEnabled ? 'purple' :
+                              'gray'
+                            }
+                          >
+                            {group.securityEnabled ? 'Security' : 
+                             group.mailEnabled ? 'Mail' : 
+                             'Distribution'}
                           </Badge>
                         </Table.Cell>
+                        <Table.Cell>{formatDate(group.createdDateTime)}</Table.Cell>
                       </Table.Row>
                     ))}
                   </Table.Body>
