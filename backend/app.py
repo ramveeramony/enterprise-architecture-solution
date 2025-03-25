@@ -75,14 +75,16 @@ async def get_api_key(api_key: str = Security(api_key_header)):
 async def health_check():
     return {"status": "healthy", "version": app.version}
 
-# Import routers after app is defined
+# Import routers
 from routers import models, elements, integrations, genai
+from services import visualization
 
 # Register routers
 app.include_router(models.router, prefix="/api/models", tags=["models"])
 app.include_router(elements.router, prefix="/api/elements", tags=["elements"])
 app.include_router(integrations.router, prefix="/api/integrations", tags=["integrations"])
 app.include_router(genai.router, prefix="/api/genai", tags=["genai"])
+app.include_router(visualization.router, prefix="/api/visualizations", tags=["visualizations"])
 
 # Main entry point
 if __name__ == "__main__":
