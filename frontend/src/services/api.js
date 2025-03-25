@@ -1,255 +1,234 @@
 import axios from 'axios';
-import { createClient } from '@supabase/supabase-js';
 
-// Create Supabase client
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-const supabaseKey = import.meta.env.VITE_SUPABASE_KEY;
-export const supabase = createClient(supabaseUrl, supabaseKey);
+// Get API URL from environment or use default
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
 
-// Create axios instance for API requests
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-
-export const api = axios.create({
+// Create axios instance with base URL and default headers
+const apiClient = axios.create({
   baseURL: API_URL,
   headers: {
     'Content-Type': 'application/json',
   },
 });
 
-// Add request interceptor for authentication
-api.interceptors.request.use(
-  async (config) => {
-    // Get the current session
-    const { data } = await supabase.auth.getSession();
-    const session = data.session;
-
-    // If we have a session, add the token to the request
-    if (session) {
-      config.headers.Authorization = `Bearer ${session.access_token}`;
+// Interceptor to add auth token to requests
+apiClient.interceptors.request.use(
+  (config) => {
+    const token = localStorage.getItem('auth_token');
+    if (token) {
+      config.headers['Authorization'] = `Bearer ${token}`;
     }
-
     return config;
   },
-  (error) => Promise.reject(error)
+  (error) => {
+    return Promise.reject(error);
+  }
 );
 
-// Model related API calls
-export const modelApi = {
-  // Get all models
-  getModels: async (params = {}) => {
-    try {
-      const { data } = await api.get('/api/models', { params });
-      return data;
-    } catch (error) {
-      console.error('Error fetching models:', error);
-      throw error;
-    }
-  },
-
-  // Get model by ID
-  getModel: async (id) => {
-    try {
-      const { data } = await api.get(`/api/models/${id}`);
-      return data;
-    } catch (error) {
-      console.error(`Error fetching model ${id}:`, error);
-      throw error;
-    }
-  },
-
-  // Create new model
-  createModel: async (modelData) => {
-    try {
-      const { data } = await api.post('/api/models', modelData);
-      return data;
-    } catch (error) {
-      console.error('Error creating model:', error);
-      throw error;
-    }
-  },
-
-  // Update model
-  updateModel: async (id, modelData) => {
-    try {
-      const { data } = await api.put(`/api/models/${id}`, modelData);
-      return data;
-    } catch (error) {
-      console.error(`Error updating model ${id}:`, error);
-      throw error;
-    }
-  },
-
-  // Delete model
-  deleteModel: async (id) => {
-    try {
-      const { data } = await api.delete(`/api/models/${id}`);
-      return data;
-    } catch (error) {
-      console.error(`Error deleting model ${id}:`, error);
-      throw error;
-    }
-  },
+// Authentication API functions
+export const login = async (credentials) => {
+  const response = await apiClient.post('/auth/login', credentials);
+  return response.data;
 };
 
-// Element related API calls
-export const elementApi = {
-  // Get all elements for a model
-  getElements: async (modelId, params = {}) => {
-    try {
-      const { data } = await api.get(`/api/models/${modelId}/elements`, { params });
-      return data;
-    } catch (error) {
-      console.error(`Error fetching elements for model ${modelId}:`, error);
-      throw error;
-    }
-  },
-
-  // Get element by ID
-  getElement: async (id) => {
-    try {
-      const { data } = await api.get(`/api/elements/${id}`);
-      return data;
-    } catch (error) {
-      console.error(`Error fetching element ${id}:`, error);
-      throw error;
-    }
-  },
-
-  // Create new element
-  createElement: async (modelId, elementData) => {
-    try {
-      const { data } = await api.post(`/api/models/${modelId}/elements`, elementData);
-      return data;
-    } catch (error) {
-      console.error('Error creating element:', error);
-      throw error;
-    }
-  },
-
-  // Update element
-  updateElement: async (id, elementData) => {
-    try {
-      const { data } = await api.put(`/api/elements/${id}`, elementData);
-      return data;
-    } catch (error) {
-      console.error(`Error updating element ${id}:`, error);
-      throw error;
-    }
-  },
-
-  // Delete element
-  deleteElement: async (id) => {
-    try {
-      const { data } = await api.delete(`/api/elements/${id}`);
-      return data;
-    } catch (error) {
-      console.error(`Error deleting element ${id}:`, error);
-      throw error;
-    }
-  },
+export const logout = async () => {
+  const response = await apiClient.post('/auth/logout');
+  return response.data;
 };
 
-// Integration related API calls
-export const integrationApi = {
-  // Get all integration configurations
-  getIntegrations: async () => {
-    try {
-      const { data } = await api.get('/api/integrations');
-      return data;
-    } catch (error) {
-      console.error('Error fetching integrations:', error);
-      throw error;
-    }
-  },
-
-  // Get integration by ID
-  getIntegration: async (id) => {
-    try {
-      const { data } = await api.get(`/api/integrations/${id}`);
-      return data;
-    } catch (error) {
-      console.error(`Error fetching integration ${id}:`, error);
-      throw error;
-    }
-  },
-
-  // Configure integration
-  configureIntegration: async (type, configData) => {
-    try {
-      const { data } = await api.post(`/api/integrations/${type}/configure`, configData);
-      return data;
-    } catch (error) {
-      console.error(`Error configuring ${type} integration:`, error);
-      throw error;
-    }
-  },
-
-  // Test integration
-  testIntegration: async (id) => {
-    try {
-      const { data } = await api.post(`/api/integrations/${id}/test`);
-      return data;
-    } catch (error) {
-      console.error(`Error testing integration ${id}:`, error);
-      throw error;
-    }
-  },
-
-  // Run integration sync
-  syncIntegration: async (id) => {
-    try {
-      const { data } = await api.post(`/api/integrations/${id}/sync`);
-      return data;
-    } catch (error) {
-      console.error(`Error syncing integration ${id}:`, error);
-      throw error;
-    }
-  },
+export const getCurrentUser = async () => {
+  const response = await apiClient.get('/auth/me');
+  return response.data;
 };
 
-// GenAI related API calls
-export const genAiApi = {
-  // Get AI suggestions for an element
-  getSuggestions: async (elementId) => {
-    try {
-      const { data } = await api.get(`/api/genai/suggestions/element/${elementId}`);
-      return data;
-    } catch (error) {
-      console.error(`Error getting suggestions for element ${elementId}:`, error);
-      throw error;
-    }
-  },
-
-  // Generate documentation
-  generateDocumentation: async (params) => {
-    try {
-      const { data } = await api.post('/api/genai/documentation', params);
-      return data;
-    } catch (error) {
-      console.error('Error generating documentation:', error);
-      throw error;
-    }
-  },
-
-  // Analyze impact
-  analyzeImpact: async (params) => {
-    try {
-      const { data } = await api.post('/api/genai/impact-analysis', params);
-      return data;
-    } catch (error) {
-      console.error('Error analyzing impact:', error);
-      throw error;
-    }
-  },
-
-  // Recognize patterns
-  recognizePatterns: async (modelId, params = {}) => {
-    try {
-      const { data } = await api.post(`/api/genai/pattern-recognition/${modelId}`, params);
-      return data;
-    } catch (error) {
-      console.error(`Error recognizing patterns for model ${modelId}:`, error);
-      throw error;
-    }
-  },
+// Models API functions
+export const getModels = async () => {
+  const response = await apiClient.get('/models');
+  return response.data;
 };
+
+export const getModel = async (id) => {
+  const response = await apiClient.get(`/models/${id}`);
+  return response.data;
+};
+
+export const createModel = async (modelData) => {
+  const response = await apiClient.post('/models', modelData);
+  return response.data;
+};
+
+export const updateModel = async (id, modelData) => {
+  const response = await apiClient.put(`/models/${id}`, modelData);
+  return response.data;
+};
+
+export const deleteModel = async (id) => {
+  const response = await apiClient.delete(`/models/${id}`);
+  return response.data;
+};
+
+// Elements API functions
+export const getElements = async (modelId, filters = {}) => {
+  const response = await apiClient.get(`/elements`, {
+    params: {
+      model_id: modelId,
+      ...filters,
+    },
+  });
+  return response.data;
+};
+
+export const getElement = async (id) => {
+  const response = await apiClient.get(`/elements/${id}`);
+  return response.data;
+};
+
+export const createElement = async (elementData) => {
+  const response = await apiClient.post('/elements', elementData);
+  return response.data;
+};
+
+export const updateElement = async (id, elementData) => {
+  const response = await apiClient.put(`/elements/${id}`, elementData);
+  return response.data;
+};
+
+export const deleteElement = async (id) => {
+  const response = await apiClient.delete(`/elements/${id}`);
+  return response.data;
+};
+
+// Relationships API functions
+export const getRelationships = async (modelId, filters = {}) => {
+  const response = await apiClient.get(`/relationships`, {
+    params: {
+      model_id: modelId,
+      ...filters,
+    },
+  });
+  return response.data;
+};
+
+export const getRelationship = async (id) => {
+  const response = await apiClient.get(`/relationships/${id}`);
+  return response.data;
+};
+
+export const createRelationship = async (relationshipData) => {
+  const response = await apiClient.post('/relationships', relationshipData);
+  return response.data;
+};
+
+export const updateRelationship = async (id, relationshipData) => {
+  const response = await apiClient.put(`/relationships/${id}`, relationshipData);
+  return response.data;
+};
+
+export const deleteRelationship = async (id) => {
+  const response = await apiClient.delete(`/relationships/${id}`);
+  return response.data;
+};
+
+// Visualization API functions
+export const getVisualizations = async (modelId) => {
+  const response = await apiClient.get(`/visualizations/model/${modelId}`);
+  return response.data;
+};
+
+export const getVisualization = async (id) => {
+  const response = await apiClient.get(`/visualizations/${id}`);
+  return response.data;
+};
+
+export const getVisualizationData = async (id) => {
+  const response = await apiClient.get(`/visualizations/${id}/data`);
+  return response.data;
+};
+
+export const createVisualization = async (visualizationData) => {
+  const response = await apiClient.post('/visualizations', visualizationData);
+  return response.data;
+};
+
+export const updateVisualization = async (visualizationData) => {
+  const { id, ...data } = visualizationData;
+  const response = await apiClient.put(`/visualizations/${id}`, data);
+  return response.data;
+};
+
+export const deleteVisualization = async (id) => {
+  const response = await apiClient.delete(`/visualizations/${id}`);
+  return response.data;
+};
+
+export const exportVisualization = async (id, format) => {
+  const response = await apiClient.get(`/visualizations/${id}/export`, {
+    params: { format },
+    responseType: 'blob', // Important: This tells axios to handle the response as a binary blob
+  });
+  return response.data;
+};
+
+// Integration API functions
+export const getIntegrationConfig = async (integrationType) => {
+  const response = await apiClient.get(`/integrations/${integrationType}/config`);
+  return response.data;
+};
+
+export const updateIntegrationConfig = async (integrationType, configData) => {
+  const response = await apiClient.put(`/integrations/${integrationType}/config`, configData);
+  return response.data;
+};
+
+export const testIntegration = async (integrationType, configData) => {
+  const response = await apiClient.post(`/integrations/${integrationType}/test`, configData);
+  return response.data;
+};
+
+export const syncIntegration = async (integrationType) => {
+  const response = await apiClient.post(`/integrations/${integrationType}/sync`);
+  return response.data;
+};
+
+// GenAI API functions
+export const generateDocumentation = async (params) => {
+  const response = await apiClient.post('/genai/generate-documentation', params);
+  return response.data;
+};
+
+export const analyzeImpact = async (params) => {
+  const response = await apiClient.post('/genai/analyze-impact', params);
+  return response.data;
+};
+
+export const recognizePatterns = async (params) => {
+  const response = await apiClient.post('/genai/recognize-patterns', params);
+  return response.data;
+};
+
+export const suggestImprovements = async (params) => {
+  const response = await apiClient.post('/genai/suggest-improvements', params);
+  return response.data;
+};
+
+// Error handler
+export const handleApiError = (error) => {
+  let errorMessage = 'An unexpected error occurred';
+
+  if (error.response) {
+    // The request was made and the server responded with a status code
+    // that falls out of the range of 2xx
+    const data = error.response.data;
+    errorMessage = data.detail || data.message || String(data);
+  } else if (error.request) {
+    // The request was made but no response was received
+    errorMessage = 'No response received from server';
+  } else {
+    // Something happened in setting up the request that triggered an Error
+    errorMessage = error.message;
+  }
+
+  return errorMessage;
+};
+
+export default apiClient;
